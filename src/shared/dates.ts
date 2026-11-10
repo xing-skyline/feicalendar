@@ -1,5 +1,25 @@
 export const TIME_ZONE = "Asia/Shanghai";
 
+export function hourTime(hour: number): string {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+export function teachingWeek(
+  date: string,
+  firstWeekDate: string,
+  totalWeeks: number,
+  weekStartsOn: number,
+): number | null {
+  if (!firstWeekDate) return null;
+  const current = new Date(`${date.slice(0, 10)}T00:00:00Z`);
+  const first = new Date(`${firstWeekDate}T00:00:00Z`);
+  const currentOffset = (current.getUTCDay() - weekStartsOn + 7) % 7;
+  const firstOffset = (first.getUTCDay() - weekStartsOn + 7) % 7;
+  const dayDistance = (current.getTime() - first.getTime()) / 86400_000;
+  const week = Math.floor((dayDistance - currentOffset + firstOffset) / 7) + 1;
+  return week >= 1 && week <= totalWeeks ? week : null;
+}
+
 export function dateKey(input: Date | string): string {
   const date = new Date(input);
   if (!Number.isFinite(date.getTime())) return "";

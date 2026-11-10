@@ -16,6 +16,8 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { checkCalendarViews } from "./check-views.mjs";
+import { checkCalendarSettings } from "./check-settings.mjs";
+import { checkSyncConnections } from "./check-connections.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { version } = JSON.parse(
@@ -94,7 +96,8 @@ async function launch() {
     }
   }
   if (!endpoint) throw new Error("Portable startup exceeded 120 seconds");
-  browser = await chromium.connectOverCDP(endpoint);
+  // Keep native visibility semantics while verifying tray hide/restore.
+  browser = await chromium.connectOverCDP(endpoint, { noDefaults: true });
   const context = browser.contexts()[0];
   const page = context.pages()[0] || (await context.waitForEvent("page"));
   page.on("pageerror", (error) => errors.push(error.message));
@@ -107,6 +110,9 @@ async function launch() {
 async function close() {
   if (browser?.isConnected()) {
     const page = browser.contexts()[0].pages()[0];
+    await page?.evaluate(() =>
+      window.calendar.settings({ closeToTray: false }),
+    );
     await page
       ?.getByTitle("关闭应用", { exact: true })
       .click()
@@ -150,6 +156,25 @@ try {
   await page.getByRole("button", { name: "保存日程", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await checkCalendarViews(page, screenshots, "portable");
+  await checkCalendarSettings(page, screenshots, "portable");
+  await checkSyncConnections(page, screenshots, "portable");
+  await page.getByTitle("最小化到托盘", { exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => document.visibilityState))
+    .toBe("hidden");
+  expect(child.exitCode).toBeNull();
+  const secondInstance = spawn(executable, [], {
+    env,
+    cwd: path.dirname(executable),
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  await expect
+    .poll(() => page.evaluate(() => document.visibilityState), {
+      timeout: 30_000,
+    })
+    .toBe("visible");
+  await expect.poll(() => secondInstance.exitCode, { timeout: 30_000 }).toBe(0);
   await close();
 
   const relocated = path.join(secondLocation, "飞历.exe");
@@ -159,6 +184,8 @@ try {
   await expect(page.locator(".fc-dayGridMonth-view")).toBeVisible();
   let state = await page.evaluate(() => window.calendar.snapshot());
   expect(state.settings.calendarView).toBe("dayGridMonth");
+  expect(state.settings.teachingWeeks).toBe(3);
+  expect(state.settings.defaultDurationMinutes).toBe(90);
   expect(state.events).toHaveLength(1);
   expect(state.events[0].title).toBe("便携版独立运行验证");
   await page.getByLabel("搜索日程", { exact: true }).fill("便携版独立");
@@ -184,7 +211,7 @@ try {
   );
   expect(saved.events).toHaveLength(0);
   console.log(
-    "PASS standalone portable EXE, bundled Feishu client, six rendered views, local CRUD, moved/renamed EXE, restart persistence, zero renderer errors",
+    "PASS standalone portable EXE, bundled Feishu client, six views, settings, teaching weeks, close-to-tray, second-instance restore, local CRUD, moved/renamed EXE, restart persistence",
   );
 } finally {
   await close();

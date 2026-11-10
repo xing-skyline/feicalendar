@@ -12,6 +12,8 @@ import {
   ExternalLink,
   Download,
   AlertCircle,
+  CalendarDays,
+  GraduationCap,
 } from "lucide-react";
 import type {
   AppSnapshot,
@@ -19,6 +21,33 @@ import type {
   AuthStatus,
   Connection,
 } from "../shared/types";
+import { hourTime } from "../shared/dates";
+
+const connectionPresets = [
+  { name: "通用 CalDAV", kind: "caldav", url: "", readOnly: false },
+  {
+    name: "iCloud 日历",
+    kind: "caldav",
+    url: "https://caldav.icloud.com",
+    readOnly: false,
+  },
+  { name: "Nextcloud 日历", kind: "caldav", url: "", readOnly: false },
+  {
+    name: "飞书 CalDAV 订阅",
+    kind: "caldav",
+    url: "https://caldav.feishu.cn",
+    readOnly: true,
+  },
+  {
+    name: "坚果云",
+    kind: "webdav",
+    url: "https://dav.jianguoyun.com/dav/",
+    readOnly: false,
+  },
+  { name: "Nextcloud / NAS 网盘", kind: "webdav", url: "", readOnly: false },
+  { name: "自定义 WebDAV", kind: "webdav", url: "", readOnly: false },
+  { name: "ICS 订阅", kind: "ics", url: "", readOnly: true },
+] as const;
 
 export default function SettingsDialog({
   snapshot,
@@ -43,6 +72,15 @@ export default function SettingsDialog({
   const [removing, setRemoving] = useState("");
   const [appId, setAppId] = useState("");
   const [appSecret, setAppSecret] = useState("");
+  const [teachingDate, setTeachingDate] = useState(
+    snapshot.settings.teachingStartDate,
+  );
+  const [teachingCount, setTeachingCount] = useState(
+    String(snapshot.settings.teachingWeeks),
+  );
+  const pendingCount =
+    snapshot.queue.length +
+    snapshot.connections.filter((item) => item.teachingConflict).length;
   useEffect(() => {
     void window.calendar.authStatus().then(setAuth);
   }, []);
@@ -115,9 +153,23 @@ export default function SettingsDialog({
             >
               <RefreshCw size={17} />
               同步记录
-              {snapshot.queue.length > 0 && (
-                <span className="count">{snapshot.queue.length}</span>
+              {pendingCount > 0 && (
+                <span className="count">{pendingCount}</span>
               )}
+            </button>
+            <button
+              className={tab === "display" ? "active" : ""}
+              onClick={() => setTab("display")}
+            >
+              <CalendarDays size={17} />
+              日历显示
+            </button>
+            <button
+              className={tab === "teaching" ? "active" : ""}
+              onClick={() => setTab("teaching")}
+            >
+              <GraduationCap size={17} />
+              教学周
             </button>
             <div className="settings-version">FeiCalendar {version}</div>
           </nav>
@@ -126,7 +178,7 @@ export default function SettingsDialog({
               <>
                 <h3>让日程保持同步</h3>
                 <p className="muted-text">
-                  连接飞书账号，随时查看和安排你的日程。
+                  多个账号和同步方式可以同时启用，日程按所属日历同步到对应服务。
                 </p>
                 <div className="connection-card">
                   <div className="connection-header">
@@ -286,28 +338,31 @@ export default function SettingsDialog({
                   </div>
                 )}
                 <div className="section-heading">
-                  <h3>订阅日历</h3>
+                  <h3>更多同步来源</h3>
                   <button
                     className="text-button"
                     onClick={() =>
                       setConnection({
                         id: "",
-                        name: "飞书订阅",
+                        name: "通用 CalDAV",
                         kind: "caldav",
-                        url: "https://caldav.feishu.cn",
+                        url: "",
                         username: "",
                         password: "",
+                        enabled: true,
+                        readOnly: false,
+                        syncTeaching: true,
                       })
                     }
                   >
                     <Plus size={16} />
-                    添加订阅
+                    添加连接
                   </button>
                 </div>
                 <p className="muted-text">
-                  在飞书“设置 → 日历 → CalDAV
-                  同步配置”获取服务器、用户名和密码。CalDAV 和 ICS
-                  订阅支持单向读取，写回日程需连接上方飞书账号。
+                  CalDAV 可与手机日历共同编辑。WebDAV
+                  为多个飞历客户端同步日程和教学周。
+                  每个连接独立保存，可分别暂停和恢复。
                 </p>
                 {snapshot.connections.map((item) => (
                   <div className="subscription-row" key={item.id}>
@@ -316,13 +371,39 @@ export default function SettingsDialog({
                       <b>{item.name}</b>
                       <small>
                         {item.kind.toUpperCase()} ·{" "}
-                        {item.error
-                          ? "连接失败"
-                          : item.lastSync
-                            ? "已同步"
-                            : "待同步"}
+                        {item.teachingConflict
+                          ? "配置冲突"
+                          : item.enabled === false
+                            ? "已暂停"
+                            : item.error
+                              ? "连接失败"
+                              : item.lastSync
+                                ? "已同步"
+                                : "待同步"}
                       </small>
+                      {item.error && (
+                        <small className="error-text">{item.error}</small>
+                      )}
                     </div>
+                    <label className="inline-check">
+                      <input
+                        type="checkbox"
+                        aria-label={`启用 ${item.name}`}
+                        checked={item.enabled !== false}
+                        disabled={busy}
+                        onChange={(e) =>
+                          void perform(async () => {
+                            update(
+                              await window.calendar.saveConnection({
+                                ...item,
+                                enabled: e.target.checked,
+                              }),
+                            );
+                          })
+                        }
+                      />
+                      启用
+                    </label>
                     <button
                       className="text-button"
                       onClick={() => setConnection(item)}
@@ -331,14 +412,14 @@ export default function SettingsDialog({
                     </button>
                     <button
                       className="icon-button danger"
-                      title="移除订阅"
+                      title="移除连接"
                       onClick={() => setRemoving(item.id)}
                     >
                       <Trash2 size={16} />
                     </button>
                     {removing === item.id && (
                       <div className="inline-confirm">
-                        移除订阅及其本地缓存？
+                        移除此连接及本地缓存？云端日程会保留。
                         <button
                           onClick={() =>
                             void perform(async () => {
@@ -370,20 +451,42 @@ export default function SettingsDialog({
                       });
                     }}
                   >
+                    {!connection.id && (
+                      <label>
+                        服务预设
+                        <select
+                          aria-label="服务预设"
+                          defaultValue="0"
+                          onChange={(e) => {
+                            const preset =
+                              connectionPresets[Number(e.target.value)];
+                            setConnection({ ...connection, ...preset });
+                          }}
+                        >
+                          {connectionPresets.map((preset, index) => (
+                            <option key={preset.name} value={index}>
+                              {preset.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
                     <div className="form-two">
                       <label>
-                        订阅方式
+                        连接方式
                         <select
                           aria-label="订阅方式"
                           value={connection.kind}
+                          disabled={Boolean(connection.id)}
                           onChange={(e) =>
                             setConnection({
                               ...connection,
-                              kind: e.target.value as "caldav" | "ics",
+                              kind: e.target.value as Connection["kind"],
                             })
                           }
                         >
                           <option value="caldav">CalDAV 账号</option>
+                          <option value="webdav">WebDAV 网盘</option>
                           <option value="ics">ICS / Webcal 链接</option>
                         </select>
                       </label>
@@ -403,10 +506,13 @@ export default function SettingsDialog({
                       </label>
                     </div>
                     <label>
-                      {connection.kind === "caldav" ? "服务器地址" : "订阅链接"}
+                      {connection.kind === "ics" ? "订阅链接" : "服务器地址"}
                       <input
                         aria-label="订阅地址"
                         required
+                        readOnly={Boolean(
+                          connection.id && connection.kind !== "ics",
+                        )}
                         value={connection.url}
                         onChange={(e) =>
                           setConnection({ ...connection, url: e.target.value })
@@ -414,13 +520,14 @@ export default function SettingsDialog({
                         placeholder="https://"
                       />
                     </label>
-                    {connection.kind === "caldav" && (
+                    {connection.kind !== "ics" && (
                       <div className="form-two">
                         <label>
                           用户名
                           <input
-                            aria-label="CalDAV 用户名"
+                            aria-label="同步用户名"
                             required
+                            readOnly={Boolean(connection.id)}
                             value={connection.username}
                             autoComplete="off"
                             onChange={(e) =>
@@ -434,7 +541,7 @@ export default function SettingsDialog({
                         <label>
                           密码
                           <input
-                            aria-label="CalDAV 密码"
+                            aria-label="同步密码"
                             type="password"
                             required={!connection.hasPassword}
                             value={connection.password || ""}
@@ -454,7 +561,49 @@ export default function SettingsDialog({
                         </label>
                       </div>
                     )}
-                    <small>订阅凭据使用 Windows 本地加密保存。</small>
+                    {connection.kind === "caldav" && (
+                      <label className="inline-check">
+                        <input
+                          type="checkbox"
+                          aria-label="以只读方式连接"
+                          checked={connection.readOnly !== false}
+                          onChange={(e) =>
+                            setConnection({
+                              ...connection,
+                              readOnly: e.target.checked,
+                            })
+                          }
+                        />
+                        以只读方式连接
+                      </label>
+                    )}
+                    {connection.kind === "webdav" && (
+                      <>
+                        <p className="muted-text">
+                          在服务器地址下的 FeiCalendar
+                          文件夹保存此连接的日历。其他飞历客户端填写同一地址即可同步。手机系统日历可通过
+                          CalDAV 连接。
+                        </p>
+                        <label className="inline-check">
+                          <input
+                            type="checkbox"
+                            aria-label="同步教学周配置"
+                            checked={Boolean(connection.syncTeaching)}
+                            onChange={(e) =>
+                              setConnection({
+                                ...connection,
+                                syncTeaching: e.target.checked,
+                              })
+                            }
+                          />
+                          同步教学周配置
+                        </label>
+                      </>
+                    )}
+                    <small>
+                      填写服务商提供的应用密码。连接凭据使用 Windows
+                      本地加密保存，每台设备单独配置。
+                    </small>
                     <div className="form-actions">
                       <button
                         type="button"
@@ -476,6 +625,20 @@ export default function SettingsDialog({
                 <h3>按你的习惯安排日程</h3>
                 <label className="setting-row">
                   <div>
+                    <b>关闭窗口后最小化到托盘</b>
+                    <p>后台继续同步和提醒，通过托盘右键菜单退出</p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    aria-label="关闭窗口后最小化到托盘"
+                    checked={snapshot.settings.closeToTray}
+                    onChange={(e) =>
+                      void configure({ closeToTray: e.target.checked })
+                    }
+                  />
+                </label>
+                <label className="setting-row">
+                  <div>
                     <b>默认日历</b>
                     <p>新建日程时使用的日历</p>
                   </div>
@@ -493,6 +656,50 @@ export default function SettingsDialog({
                           {item.name}
                         </option>
                       ))}
+                  </select>
+                </label>
+                <label className="setting-row">
+                  <div>
+                    <b>新日程默认时长</b>
+                    <p>新建或点击时间格时使用，拖选时按所选范围安排</p>
+                  </div>
+                  <select
+                    aria-label="新日程默认时长"
+                    value={snapshot.settings.defaultDurationMinutes}
+                    onChange={(e) =>
+                      void configure({
+                        defaultDurationMinutes: Number(e.target.value),
+                      })
+                    }
+                  >
+                    {[15, 30, 45, 60, 90, 120, 180, 240].map((minutes) => (
+                      <option key={minutes} value={minutes}>
+                        {minutes} 分钟
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="setting-row">
+                  <div>
+                    <b>新日程默认提醒</b>
+                    <p>提前提醒时间可在每条日程中单独调整</p>
+                  </div>
+                  <select
+                    aria-label="新日程默认提醒"
+                    value={snapshot.settings.defaultReminder}
+                    onChange={(e) =>
+                      void configure({
+                        defaultReminder: Number(e.target.value),
+                      })
+                    }
+                  >
+                    <option value={-1}>不提醒</option>
+                    <option value={0}>日程开始时</option>
+                    {[5, 10, 15, 30, 60].map((minutes) => (
+                      <option key={minutes} value={minutes}>
+                        提前 {minutes} 分钟
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <label className="setting-row">
@@ -517,7 +724,7 @@ export default function SettingsDialog({
                 <label className="setting-row">
                   <div>
                     <b>自动同步</b>
-                    <p>应用打开时定期同步日程</p>
+                    <p>应用运行期间定期同步，托盘后台运行时也会继续</p>
                   </div>
                   <input
                     type="checkbox"
@@ -546,20 +753,8 @@ export default function SettingsDialog({
                 </label>
                 <label className="setting-row">
                   <div>
-                    <b>显示周末</b>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={snapshot.settings.weekends}
-                    onChange={(e) =>
-                      void configure({ weekends: e.target.checked })
-                    }
-                  />
-                </label>
-                <label className="setting-row">
-                  <div>
                     <b>桌面提醒</b>
-                    <p>应用打开时发送 Windows 日程通知</p>
+                    <p>应用运行期间发送 Windows 通知，托盘状态下也可提醒</p>
                   </div>
                   <input
                     type="checkbox"
@@ -591,10 +786,160 @@ export default function SettingsDialog({
                   <h4>键盘快捷键</h4>
                   <p>
                     <kbd>N</kbd>新建日程 <kbd>T</kbd>回到今天 <kbd>Ctrl K</kbd>
-                    搜索日程 <kbd>Esc</kbd>关闭窗口
+                    搜索日程 <kbd>Esc</kbd>关闭弹窗
                   </p>
                 </div>
               </>
+            )}
+            {tab === "display" && (
+              <>
+                <h3>日历显示</h3>
+                <label className="setting-row">
+                  <div>
+                    <b>每周起始日</b>
+                    <p>同时应用到主日历、迷你月历和教学周</p>
+                  </div>
+                  <select
+                    aria-label="每周起始日"
+                    value={snapshot.settings.weekStartsOn}
+                    onChange={(e) =>
+                      void configure({
+                        weekStartsOn: Number(e.target.value) as 0 | 1 | 6,
+                      })
+                    }
+                  >
+                    <option value={1}>星期一</option>
+                    <option value={0}>星期日</option>
+                    <option value={6}>星期六</option>
+                  </select>
+                </label>
+                <label className="setting-row">
+                  <div>
+                    <b>时间格式</b>
+                    <p>应用到日历时间轴、日程列表和搜索结果</p>
+                  </div>
+                  <select
+                    aria-label="时间格式"
+                    value={snapshot.settings.hour12 ? "12" : "24"}
+                    onChange={(e) =>
+                      void configure({ hour12: e.target.value === "12" })
+                    }
+                  >
+                    <option value="24">24 小时制</option>
+                    <option value="12">12 小时制</option>
+                  </select>
+                </label>
+                <div className="setting-row">
+                  <div>
+                    <b>日历显示时段</b>
+                    <p>日、三日和周视图的时间轴范围</p>
+                  </div>
+                  <div className="time-range-settings">
+                    <select
+                      aria-label="显示开始时间"
+                      value={snapshot.settings.dayStartHour}
+                      onChange={(e) =>
+                        void configure({ dayStartHour: Number(e.target.value) })
+                      }
+                    >
+                      {Array.from(
+                        { length: snapshot.settings.dayEndHour },
+                        (_, hour) => (
+                          <option key={hour} value={hour}>
+                            {hourTime(hour)}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                    <span>至</span>
+                    <select
+                      aria-label="显示结束时间"
+                      value={snapshot.settings.dayEndHour}
+                      onChange={(e) =>
+                        void configure({ dayEndHour: Number(e.target.value) })
+                      }
+                    >
+                      {Array.from(
+                        { length: 24 - snapshot.settings.dayStartHour },
+                        (_, index) =>
+                          snapshot.settings.dayStartHour + index + 1,
+                      ).map((hour) => (
+                        <option key={hour} value={hour}>
+                          {hourTime(hour)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <label className="setting-row">
+                  <div>
+                    <b>显示周末</b>
+                  </div>
+                  <input
+                    type="checkbox"
+                    aria-label="显示周末"
+                    checked={snapshot.settings.weekends}
+                    onChange={(e) =>
+                      void configure({ weekends: e.target.checked })
+                    }
+                  />
+                </label>
+              </>
+            )}
+            {tab === "teaching" && (
+              <form
+                className="teaching-settings"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void perform(async () => {
+                    update(
+                      await window.calendar.settings({
+                        teachingStartDate: teachingDate,
+                        teachingWeeks: Number(teachingCount),
+                      }),
+                    );
+                    setNotice("教学周设置已保存");
+                  });
+                }}
+              >
+                <h3>教学周</h3>
+                <p className="muted-text">
+                  所选日期所在周记为第 1
+                  周，按照“每周起始日”划分。月历会逐周显示编号。
+                </p>
+                <label className="setting-row">
+                  <div>
+                    <b>第一教学周的日期</b>
+                    <p>选择第一周内任意一天，留空可关闭教学周显示</p>
+                  </div>
+                  <input
+                    type="date"
+                    aria-label="第一教学周的日期"
+                    value={teachingDate}
+                    onChange={(e) => setTeachingDate(e.target.value)}
+                  />
+                </label>
+                <label className="setting-row">
+                  <div>
+                    <b>教学周总数</b>
+                    <p>超出设定范围的日期留空</p>
+                  </div>
+                  <input
+                    type="number"
+                    aria-label="教学周总数"
+                    min={1}
+                    max={104}
+                    required
+                    value={teachingCount}
+                    onChange={(e) => setTeachingCount(e.target.value)}
+                  />
+                </label>
+                <div className="form-actions">
+                  <button type="submit" className="primary" disabled={busy}>
+                    保存教学周设置
+                  </button>
+                </div>
+              </form>
             )}
             {tab === "sync" && (
               <>
@@ -618,13 +963,61 @@ export default function SettingsDialog({
                     <p>{snapshot.syncError}</p>
                   </div>
                 )}
-                {!snapshot.queue.length && (
+                {!pendingCount && (
                   <div className="queue-empty">
                     <CheckCircle2 size={30} />
                     <p>所有修改已保存在本地</p>
-                    <small>当前没有等待写回飞书的日程</small>
+                    <small>当前没有等待写回云端的日程</small>
                   </div>
                 )}
+                {snapshot.connections
+                  .filter((item) => item.teachingConflict)
+                  .map((item) => (
+                    <article className="queue-item" key={`teaching-${item.id}`}>
+                      <b>{item.name} · 教学周配置冲突</b>
+                      <div className="conflict-comparison">
+                        <div>
+                          <b>本机配置</b>
+                          <p>
+                            {snapshot.settings.teachingStartDate || "未启用"} ·{" "}
+                            {snapshot.settings.teachingWeeks} 周
+                          </p>
+                        </div>
+                        <div>
+                          <b>云端配置</b>
+                          <p>
+                            {item.teachingConflict!.teachingStartDate ||
+                              "未启用"}{" "}
+                            · {item.teachingConflict!.teachingWeeks} 周
+                          </p>
+                        </div>
+                      </div>
+                      <div className="form-actions">
+                        {(["remote", "local"] as const).map((choice) => (
+                          <button
+                            key={choice}
+                            className="secondary"
+                            disabled={busy}
+                            onClick={() =>
+                              void perform(async () => {
+                                update(
+                                  await window.calendar.resolveTeachingConflict(
+                                    item.id,
+                                    choice,
+                                  ),
+                                );
+                                await onSync();
+                              })
+                            }
+                          >
+                            {choice === "remote"
+                              ? "使用云端教学周"
+                              : "使用本机教学周"}
+                          </button>
+                        ))}
+                      </div>
+                    </article>
+                  ))}
                 {snapshot.queue.map((change) => {
                   const event = snapshot.events.find(
                     (item) => item.id === change.eventId,
@@ -659,7 +1052,7 @@ export default function SettingsDialog({
                               <small>{event?.start}</small>
                             </div>
                             <div>
-                              <b>飞书版本</b>
+                              <b>云端版本</b>
                               <p>
                                 {change.remote.deleted
                                   ? "已删除"
@@ -683,7 +1076,7 @@ export default function SettingsDialog({
                                 )
                               }
                             >
-                              采用飞书版本
+                              采用云端版本
                             </button>
                             <button
                               className="primary"

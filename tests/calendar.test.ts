@@ -13,6 +13,7 @@ import {
 import { CalendarService, type Vault } from "../electron/service";
 import { exportICS, parseSubscription } from "../electron/subscriptions";
 import { expandLocalEvents } from "../src/shared/recurrence";
+import { teachingWeek } from "../src/shared/dates";
 import type { CalendarEvent, Connection } from "../src/shared/types";
 
 function event(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
@@ -331,7 +332,19 @@ test("existing profiles without a valid saved view retain their data and open th
   t.after(() => rm(directory, { recursive: true, force: true }));
   const state = emptyState();
   state.events = [event()];
-  const { calendarView, ...previousSettings } = state.settings;
+  const {
+    calendarView,
+    closeToTray,
+    weekStartsOn,
+    hour12,
+    dayStartHour,
+    dayEndHour,
+    defaultDurationMinutes,
+    defaultReminder,
+    teachingStartDate,
+    teachingWeeks,
+    ...previousSettings
+  } = state.settings;
   const oldProfile = { ...state, settings: previousSettings };
   await writeFile(
     path.join(directory, "calendar.json"),
@@ -340,6 +353,9 @@ test("existing profiles without a valid saved view retain their data and open th
   const restored = new Store(directory);
   await restored.load();
   assert.equal(restored.state.settings.calendarView, "timeGridWeek");
+  assert.equal(restored.state.settings.closeToTray, true);
+  assert.equal(restored.state.settings.teachingStartDate, "");
+  assert.equal(restored.state.settings.teachingWeeks, 20);
   assert.deepEqual(restored.state.events, state.events);
   await writeFile(
     path.join(directory, "calendar.json"),
@@ -351,4 +367,37 @@ test("existing profiles without a valid saved view retain their data and open th
   await restored.load();
   assert.equal(restored.state.settings.calendarView, "timeGridWeek");
   assert.deepEqual(restored.state.events, state.events);
+});
+
+test("teaching weeks follow the configured week boundary and stop at the term boundaries", () => {
+  assert.equal(teachingWeek("2026-08-30", "2026-09-02", 20, 1), null);
+  assert.equal(teachingWeek("2026-08-31", "2026-09-02", 20, 1), 1);
+  assert.equal(teachingWeek("2026-09-06", "2026-09-02", 20, 1), 1);
+  assert.equal(teachingWeek("2026-09-07", "2026-09-02", 20, 1), 2);
+  assert.equal(teachingWeek("2027-01-17", "2026-09-02", 20, 1), 20);
+  assert.equal(teachingWeek("2027-01-18", "2026-09-02", 20, 1), null);
+  assert.equal(teachingWeek("2026-08-30", "2026-09-02", 20, 0), 1);
+  assert.equal(teachingWeek("2026-09-06", "2026-09-02", 20, 0), 2);
+  assert.equal(teachingWeek("2024-03-02", "2024-02-29", 2, 6), 2);
+  assert.equal(teachingWeek("2026-11-10", "", 20, 1), null);
+});
+
+test("display hours are validated before committing settings", async (t) => {
+  const f = await fixture(t);
+  await f.service.settings({ dayStartHour: 8, dayEndHour: 18 });
+  await assert.rejects(
+    f.service.settings({ dayStartHour: 19 }),
+    /结束时间必须晚于开始时间/,
+  );
+  assert.equal(f.store.state.settings.dayStartHour, 8);
+  await f.service.settings({
+    closeToTray: false,
+    teachingStartDate: "2026-09-02",
+    teachingWeeks: 18,
+  });
+  const reopened = new Store(f.directory);
+  await reopened.load();
+  assert.equal(reopened.state.settings.closeToTray, false);
+  assert.equal(reopened.state.settings.teachingStartDate, "2026-09-02");
+  assert.equal(reopened.state.settings.teachingWeeks, 18);
 });

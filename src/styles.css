@@ -528,6 +528,40 @@ kbd {
   box-shadow: 0 2px 5px #5474ee30;
   font-weight: 600;
 }
+.teaching-week-summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  align-self: center;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  margin-left: 16px;
+}
+.teaching-week-summary small {
+  font-weight: 400;
+}
+.fc .fc-timegrid-axis .fc-week-number,
+.fc .fc-daygrid-week-number {
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.fc .fc-daygrid-week-number {
+  background: var(--hover);
+  border-radius: 0 0 5px 0;
+  padding: 3px 5px;
+}
+.fc .fc-daygrid-week-number:empty {
+  display: none;
+}
+.fc .fc-scrollgrid-section .fc-week-number {
+  min-width: 52px;
+  font-size: 11px;
+  color: var(--accent);
+  white-space: nowrap;
+}
 .calendar-and-agenda {
   flex: 1;
   display: flex;
@@ -1176,6 +1210,17 @@ kbd {
   font-weight: 600;
   margin-bottom: 8px;
 }
+.time-range-settings {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.setting-row .time-range-settings select {
+  min-width: 78px;
+}
+.teaching-settings input[type="number"] {
+  width: 90px;
+}
 .connection-card {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1617,6 +1662,11 @@ kbd {
   .view-tabs button {
     padding-left: 14px;
     padding-right: 14px;
+  }
+  .teaching-week-summary {
+    flex-direction: column;
+    gap: 2px;
+    font-size: 12px;
   }
 }
 @media (max-width: 1100px) {

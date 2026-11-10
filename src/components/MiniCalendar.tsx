@@ -13,15 +13,18 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 export default function MiniCalendar({
   month,
   selected,
+  weekStartsOn,
   onMonth,
   onSelect,
 }: {
   month: Date;
   selected: Date;
+  weekStartsOn: 0 | 1 | 6;
   onMonth: (date: Date) => void;
   onSelect: (date: Date) => void;
 }) {
-  const first = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
+  const first = startOfWeek(startOfMonth(month), { weekStartsOn });
+  const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
   const count =
     Math.ceil(
       (endOfMonth(month).getTime() - first.getTime() + 86400_000) /
@@ -49,9 +52,9 @@ export default function MiniCalendar({
         </span>
       </div>
       <div className="mini-grid">
-        {["一", "二", "三", "四", "五", "六", "日"].map((day) => (
-          <span className="mini-weekday" key={day}>
-            {day}
+        {Array.from({ length: 7 }, (_, index) => (
+          <span className="mini-weekday" key={index}>
+            {weekdays[(weekStartsOn + index) % 7]}
           </span>
         ))}
         {Array.from({ length: count }, (_, index) => {

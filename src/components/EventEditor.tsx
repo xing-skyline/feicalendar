@@ -18,6 +18,7 @@ import { dateKey, inputTime, shiftDate } from "../shared/dates";
 export default function EventEditor({
   initial,
   calendars,
+  defaultDurationMinutes,
   onSave,
   onDelete,
   onClose,
@@ -25,6 +26,7 @@ export default function EventEditor({
 }: {
   initial: CalendarEvent;
   calendars: CalendarSource[];
+  defaultDurationMinutes: number;
   onSave: (input: EventSave) => Promise<void>;
   onDelete: (id: string, scope?: "single" | "all") => Promise<void>;
   onClose: () => void;
@@ -37,6 +39,9 @@ export default function EventEditor({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const calendar = calendars.find((item) => item.id === event.calendarId);
   const readOnly = !calendar?.writable;
+  const remoteOccurrence = Boolean(
+    event.remoteId && calendar?.provider !== "webdav",
+  );
   const existing = Boolean(initial.id);
   const repeated = Boolean(
     existing && (initial.recurrence || initial.recurring),
@@ -70,7 +75,10 @@ export default function EventEditor({
       start: allDay ? dateKey(event.start) : `${event.start}T09:00:00+08:00`,
       end: allDay
         ? shiftDate(dateKey(event.end), 1)
-        : `${shiftDate(event.end, -1)}T10:00:00+08:00`,
+        : new Date(
+            new Date(`${shiftDate(event.end, -1)}T09:00:00+08:00`).getTime() +
+              defaultDurationMinutes * 60_000,
+          ).toISOString(),
     });
   };
 
@@ -198,12 +206,12 @@ export default function EventEditor({
           <span>重复</span>
           <select
             aria-label="重复规则"
-            disabled={readOnly || Boolean(event.remoteId)}
+            disabled={readOnly || remoteOccurrence}
             value={event.recurrence}
             onChange={(e) => patch({ recurrence: e.target.value })}
           >
             <option value="">
-              {event.remoteId && event.recurring ? "飞书重复日程" : "不重复"}
+              {remoteOccurrence && event.recurring ? "远程重复日程" : "不重复"}
             </option>
             <option value="FREQ=DAILY">每天</option>
             <option value="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR">每个工作日</option>
@@ -227,7 +235,7 @@ export default function EventEditor({
                 仅此次日程
               </label>
             )}
-            {!event.remoteId && (
+            {!remoteOccurrence && (
               <label>
                 <input
                   type="radio"
@@ -239,9 +247,7 @@ export default function EventEditor({
                 整个重复系列
               </label>
             )}
-            {event.remoteId && (
-              <small>整个系列可通过“在飞书中打开”管理。</small>
-            )}
+            {remoteOccurrence && <small>整个系列可在来源日历中管理。</small>}
           </fieldset>
         )}
         <label className="editor-row">
@@ -250,11 +256,16 @@ export default function EventEditor({
           <select
             aria-label="提醒时间"
             value={event.reminder}
-            disabled={readOnly || Boolean(event.remoteId)}
+            disabled={
+              readOnly ||
+              Boolean(event.remoteId && calendar?.provider === "feishu")
+            }
             onChange={(e) => patch({ reminder: Number(e.target.value) })}
           >
             <option value={-1}>
-              {event.remoteId ? "由飞书管理" : "不提醒"}
+              {event.remoteId && calendar?.provider === "feishu"
+                ? "由飞书管理"
+                : "不提醒"}
             </option>
             <option value={0}>日程开始时</option>
             <option value={5}>提前 5 分钟</option>
@@ -292,7 +303,9 @@ export default function EventEditor({
               checked={event.completed}
               onChange={(e) => patch({ completed: e.target.checked })}
             />
-            标记完成（仅本机）
+            {calendar?.provider === "webdav"
+              ? "标记完成"
+              : "标记完成（仅本机）"}
           </label>
         )}
         {readOnly && (
@@ -310,7 +323,8 @@ export default function EventEditor({
           <div className="delete-confirm">
             <p>
               确认删除“{event.title}”？
-              {calendar?.provider === "feishu" && "这项修改将同步到飞书。"}
+              {calendar?.provider !== "local" &&
+                "这项修改将同步到所属云端日历。"}
             </p>
             <button
               type="button"

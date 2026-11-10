@@ -1,7 +1,7 @@
 {
   "name": "feicalendar",
   "productName": "FeiCalendar",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "飞历 — 连接飞书的桌面日历",
   "author": "xing-skyline",
   "private": true,
@@ -27,6 +27,7 @@
     "@fullcalendar/react": "6.1.22",
     "@fullcalendar/timegrid": "6.1.22",
     "date-fns": "^4.1.0",
+    "ical.js": "^2.2.1",
     "lucide-react": "^0.468.0",
     "luxon": "3.7.2",
     "node-ical": "0.27.6",
@@ -60,6 +61,7 @@
       "dist/**/*",
       "dist-electron/**/*",
       "build/icon.png",
+      "build/icon.ico",
       "package.json"
     ],
     "extraResources": [
@@ -69,7 +71,8 @@
         "filter": [
           "bin/**/*",
           "scripts/**/*",
-          "package.json"
+          "package.json",
+          "LICENSE"
         ]
       }
     ],

@@ -4,6 +4,8 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { checkCalendarViews } from "./check-views.mjs";
+import { checkCalendarSettings } from "./check-settings.mjs";
+import { checkSyncConnections } from "./check-connections.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const directory = await mkdtemp(path.join(os.tmpdir(), "feicalendar-desktop-"));
@@ -52,6 +54,29 @@ try {
   await expect(page.locator(".search-result")).toHaveCount(1);
   await page.getByLabel("关闭搜索", { exact: true }).click();
   await checkCalendarViews(page, path.join(root, "test-results"), "desktop");
+  await checkCalendarSettings(page, path.join(root, "test-results"), "desktop");
+  await checkSyncConnections(page, path.join(root, "test-results"), "desktop");
+  await page.getByTitle("最小化到托盘", { exact: true }).click();
+  await expect
+    .poll(() =>
+      application.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0].isVisible(),
+      ),
+    )
+    .toBe(false);
+  expect(
+    (await page.evaluate(() => window.calendar.snapshot())).events,
+  ).toHaveLength(1);
+  await application.evaluate(({ app }) => {
+    app.emit("second-instance");
+  });
+  await expect
+    .poll(() =>
+      application.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0].isVisible(),
+      ),
+    )
+    .toBe(true);
   await page.getByTitle("添加日历", { exact: true }).click();
   await page.getByLabel("日历名称", { exact: true }).fill("生活安排");
   await page.getByRole("button", { name: "保存日历", exact: true }).click();
@@ -114,6 +139,9 @@ try {
   await expect(
     reopened.getByRole("tab", { name: "月视图", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
+  expect(state.settings.teachingWeeks).toBe(3);
+  expect(state.settings.defaultDurationMinutes).toBe(90);
+  expect(state.settings.closeToTray).toBe(true);
   await expect(reopened.locator(".fc-dayGridMonth-view")).toBeVisible();
   await application.evaluate(({ BrowserWindow }) => {
     BrowserWindow.getAllWindows()[0].setSize(1050, 700);
@@ -130,7 +158,7 @@ try {
   });
   expect(errors).toEqual([]);
   console.log(
-    "PASS desktop CRUD, search, six views, calendar creation, themes, recurrence, credential encryption, restart persistence",
+    "PASS desktop CRUD, six views, preference settings, teaching-week boundaries, tray hide/restore, recurrence, credential encryption, restart persistence",
   );
 } finally {
   await application?.close();

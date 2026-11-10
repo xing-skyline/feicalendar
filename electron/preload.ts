@@ -16,6 +16,8 @@ const api: DesktopAPI = {
     ipcRenderer.invoke("calendar:save-connection", connection),
   removeConnection: (id) =>
     ipcRenderer.invoke("calendar:remove-connection", id),
+  resolveTeachingConflict: (id, choice) =>
+    ipcRenderer.invoke("calendar:resolve-teaching-conflict", id, choice),
   authStatus: () => ipcRenderer.invoke("calendar:auth-status"),
   configureApp: (appId, appSecret) =>
     ipcRenderer.invoke("calendar:configure-app", appId, appSecret),

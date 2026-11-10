@@ -9,7 +9,13 @@ import type {
   Settings,
 } from "../src/shared/types";
 import { overlaps } from "../src/shared/dates";
-import { fingerprint, FeishuClient } from "./feishu";
+import { FeishuClient } from "./feishu";
+import { CalDAVClient } from "./caldav";
+import { WebDAVClient, teachingSchema } from "./webdav";
+import {
+  contentFingerprint,
+  type RemoteCalendarClient,
+} from "./remote-calendar";
 import { checkedUrl, fetchSubscription } from "./subscriptions";
 import { Store } from "./store";
 
@@ -26,6 +32,12 @@ export class CalendarService {
     readonly feishu: FeishuClient,
     private vault: Vault,
     private changed: (snapshot: AppSnapshot) => void = () => {},
+    private makeClient: (connection: Connection) => RemoteCalendarClient = (
+      connection,
+    ) =>
+      connection.kind === "webdav"
+        ? new WebDAVClient(connection)
+        : new CalDAVClient(connection),
   ) {}
 
   exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -81,7 +93,7 @@ export class CalendarService {
     );
     if (existing) {
       if (existing.action === "create" && action === "delete") {
-        // A failed create may have reached Feishu. Keep the same idempotency key and
+        // A failed create may have reached the server. Keep the same idempotency key and
         // create then delete on retry, so an uncertain response cannot leave an orphan.
         event.deleted = true;
       } else if (existing.action !== "create") existing.action = action;
@@ -103,8 +115,7 @@ export class CalendarService {
   async saveEvent({ event: input, scope }: EventSave) {
     let event = structuredClone(input);
     const calendar = this.calendar(event.calendarId);
-    if (!calendar.writable)
-      throw new Error("此日历为订阅日历，请选择本地或可写入的飞书日历");
+    if (!calendar.writable) throw new Error("此日历为只读，请选择可写入的日历");
     let previous = this.store.state.events.find((item) => item.id === event.id);
     if (previous?.recurrence && !event.seriesId && scope !== "all")
       throw new Error("请选择整个重复系列，单次修改请从日历中打开具体日期");
@@ -113,7 +124,7 @@ export class CalendarService {
         (item) => item.id === event.seriesId,
       );
       if (!master || !scope) throw new Error("请选择重复日程的修改范围");
-      if (master.remoteId)
+      if (master.remoteId && calendar.provider !== "webdav")
         throw new Error("请先同步重复日程，再编辑展开后的具体日程");
       if (scope === "all") {
         const timeShift =
@@ -137,11 +148,17 @@ export class CalendarService {
         };
         previous = master;
       } else {
-        if (calendar.provider !== "local")
+        if (calendar.provider !== "local" && calendar.provider !== "webdav")
           throw new Error("请先同步新建的重复日程，再修改单次日程");
         master.exceptions = [
           ...new Set([...(master.exceptions || []), event.occurrenceStart!]),
         ];
+        if (calendar.provider === "webdav")
+          this.enqueue(
+            master,
+            master.remoteId ? "update" : "create",
+            master.remoteFingerprint,
+          );
         event = {
           ...event,
           id: randomUUID(),
@@ -157,15 +174,21 @@ export class CalendarService {
       throw new Error(
         "已保存日程的所属日历不能直接更换，请复制日程后选择目标日历",
       );
-    if (event.remoteId && event.recurring && scope !== "single")
-      throw new Error("飞书重复日程请选择“仅此次”，系列管理可在飞书中打开");
+    if (
+      event.remoteId &&
+      event.recurring &&
+      calendar.provider !== "webdav" &&
+      scope !== "single"
+    )
+      throw new Error("远程重复日程请选择“仅此次”，系列管理可在来源日历中操作");
     event.id ||= randomUUID();
     event.title = event.title.trim();
     event.remoteId = previous?.remoteId;
     event.remoteFingerprint = previous?.remoteFingerprint;
+    event.remoteEtag = previous?.remoteEtag;
     event.syncState = calendar.provider === "local" ? "local" : "pending";
     event.deleted = false;
-    if (calendar.provider === "feishu")
+    if (calendar.provider !== "local")
       this.enqueue(
         event,
         previous?.remoteId ? "update" : "create",
@@ -189,15 +212,27 @@ export class CalendarService {
     if (event.recurrence && !occurrenceStart && scope === "single")
       throw new Error("单次删除请从日历中打开具体日期");
     if (occurrenceStart && scope === "single") {
-      if (this.calendar(event.calendarId).provider !== "local")
+      const provider = this.calendar(event.calendarId).provider;
+      if (provider !== "local" && provider !== "webdav")
         throw new Error("请先同步新建的重复日程");
       event.exceptions = [
         ...new Set([...(event.exceptions || []), occurrenceStart]),
       ];
+      if (provider === "webdav")
+        this.enqueue(
+          event,
+          event.remoteId ? "update" : "create",
+          event.remoteFingerprint,
+        );
       return this.commit();
     }
-    if (event.remoteId && event.recurring && scope !== "single")
-      throw new Error("飞书系列日程请在飞书中删除整个系列");
+    if (
+      event.remoteId &&
+      event.recurring &&
+      this.calendar(event.calendarId).provider !== "webdav" &&
+      scope !== "single"
+    )
+      throw new Error("远程系列日程请在来源日历中删除整个系列");
     if (
       event.remoteId ||
       this.store.state.queue.some((item) => item.eventId === event.id)
@@ -236,14 +271,14 @@ export class CalendarService {
     const target = this.calendar(targetId);
     if (
       source.provider !== "local" ||
-      target.provider !== "feishu" ||
+      target.provider === "local" ||
       !target.writable
     )
-      throw new Error("请选择本地来源日历和可写入的飞书目标日历");
+      throw new Error("请选择本地来源日历和可写入的云端目标日历");
     for (const event of this.store.state.events.filter(
       (item) => item.calendarId === id && !item.deleted,
     )) {
-      if (event.exceptions?.length)
+      if (event.exceptions?.length && target.provider !== "webdav")
         throw new Error(
           "此日历含已修改单次的重复日程，请先分别整理重复系列再迁移",
         );
@@ -259,6 +294,10 @@ export class CalendarService {
   }
 
   async settings(patch: Partial<Settings>) {
+    const startHour =
+      patch.dayStartHour ?? this.store.state.settings.dayStartHour;
+    const endHour = patch.dayEndHour ?? this.store.state.settings.dayEndHour;
+    if (startHour >= endHour) throw new Error("显示结束时间必须晚于开始时间");
     if (
       patch.defaultCalendarId &&
       !this.calendar(patch.defaultCalendarId).writable
@@ -274,10 +313,24 @@ export class CalendarService {
     const previous = await this.vault.read(connection.id);
     connection.password ||= previous?.password;
     if (
-      connection.kind === "caldav" &&
+      connection.kind !== "ics" &&
       (!connection.username || !connection.password)
     )
-      throw new Error("请填写 CalDAV 用户名和密码");
+      throw new Error("请填写同步账号和应用密码");
+    const existing = this.store.state.connections.find(
+      (item) => item.id === connection.id,
+    );
+    if (
+      existing &&
+      (existing.kind !== connection.kind ||
+        (connection.kind !== "ics" &&
+          (previous?.url !== connection.url ||
+            previous?.username !== connection.username)))
+    ) {
+      throw new Error(
+        "更换服务器或账号请新增连接，已有日程和待同步修改会保留在原连接中",
+      );
+    }
     await this.vault.write(connection);
     this.store.state.connections = this.store.state.connections.filter(
       (item) => item.id !== connection.id,
@@ -288,6 +341,11 @@ export class CalendarService {
       name: connection.name,
       url: "",
       username: "",
+      enabled: connection.enabled ?? true,
+      readOnly: connection.readOnly ?? true,
+      syncTeaching: connection.syncTeaching ?? false,
+      teachingBase: existing?.teachingBase,
+      teachingConflict: existing?.teachingConflict,
     });
     return this.commit();
   }
@@ -296,6 +354,13 @@ export class CalendarService {
     const ids = this.store.state.calendars
       .filter((item) => item.connectionId === id)
       .map((item) => item.id);
+    const eventIds = new Set(
+      this.store.state.events
+        .filter((item) => ids.includes(item.calendarId))
+        .map((item) => item.id),
+    );
+    if (this.store.state.queue.some((item) => eventIds.has(item.eventId)))
+      throw new Error("此连接有待同步修改，请先完成同步或处理冲突");
     this.store.state.calendars = this.store.state.calendars.filter(
       (item) => item.connectionId !== id,
     );
@@ -306,6 +371,8 @@ export class CalendarService {
       (item) => item.id !== id,
     );
     await this.vault.remove(id);
+    if (ids.includes(this.store.state.settings.defaultCalendarId))
+      this.store.state.settings.defaultCalendarId = "local";
     return this.commit();
   }
 
@@ -325,6 +392,7 @@ export class CalendarService {
     calendarId: string,
     incoming: CalendarEvent[],
     range: DateRange,
+    complete = false,
   ) {
     const protectedIds = new Set(
       this.store.state.queue.map((item) => item.eventId),
@@ -343,8 +411,14 @@ export class CalendarService {
         ? {
             ...event,
             id: old.id,
-            completed: old.completed,
-            reminder: old.reminder,
+            completed:
+              this.calendar(calendarId).provider === "webdav"
+                ? event.completed
+                : old.completed,
+            reminder:
+              this.calendar(calendarId).provider === "feishu"
+                ? old.reminder
+                : event.reminder,
           }
         : event;
     });
@@ -353,14 +427,19 @@ export class CalendarService {
       (item) =>
         item.calendarId !== calendarId ||
         protectedIds.has(item.id) ||
-        (!incomingIds.has(item.id) && !overlaps(item.start, item.end, range)),
+        (!complete &&
+          !incomingIds.has(item.id) &&
+          !overlaps(item.start, item.end, range)),
     );
     this.store.state.events.push(
-      ...mapped.filter((item) => !protectedIds.has(item.id)),
+      ...mapped.filter((item) => !protectedIds.has(item.id) && !item.deleted),
     );
   }
 
-  private async pushQueue() {
+  private async pushQueue(
+    client: RemoteCalendarClient,
+    calendarIds: Set<string>,
+  ) {
     for (const change of [...this.store.state.queue]) {
       if (change.status === "conflict") continue;
       const event = this.store.state.events.find(
@@ -368,14 +447,49 @@ export class CalendarService {
       );
       if (!event) throw new Error("待同步记录丢失，请从本地备份恢复");
       const calendar = this.calendar(event.calendarId);
+      if (!calendarIds.has(calendar.id)) continue;
+      const fingerprint = (value: CalendarEvent) =>
+        contentFingerprint(value, calendar.provider);
       try {
         let remote: CalendarEvent | undefined;
         if (change.action === "create") {
-          remote = await this.feishu.create(calendar, event, change.id);
-          if (event.deleted)
-            await this.feishu.delete(calendar, remote.remoteId!);
+          if (!change.creation) {
+            change.creation = { ...structuredClone(event), deleted: false };
+            await this.commit();
+          }
+          remote = await client.create(calendar, change.creation, change.id);
+          if (event.deleted) {
+            if (client.deleteCreated)
+              await client.deleteCreated(calendar, remote);
+            else await client.delete(calendar, remote.remoteId!, remote);
+          } else {
+            const normalize = (value: CalendarEvent) =>
+              calendar.provider === "caldav"
+                ? { ...value, recurrence: "" }
+                : value;
+            if (fingerprint(remote) !== fingerprint(normalize(event))) {
+              if (
+                fingerprint(remote) !== fingerprint(normalize(change.creation))
+              ) {
+                event.remoteId = remote.remoteId;
+                change.action = "update";
+                change.status = "conflict";
+                change.remote = remote;
+                change.error = "新建日程已在另一设备修改，请选择保留的版本";
+                event.syncState = "conflict";
+                event.error = change.error;
+                await this.commit();
+                continue;
+              }
+              remote = await client.update(
+                calendar,
+                { ...event, remoteId: remote.remoteId },
+                remote,
+              );
+            }
+          }
         } else {
-          remote = await this.feishu.get(calendar, event.remoteId!);
+          remote = await client.get(calendar, event.remoteId!);
           if (remote.deleted && change.action === "delete") {
             this.store.state.events = this.store.state.events.filter(
               (item) => item.id !== event.id,
@@ -392,14 +506,14 @@ export class CalendarService {
           ) {
             change.status = "conflict";
             change.remote = remote;
-            change.error = "飞书上的日程已变化，请选择保留的版本";
+            change.error = "云端日程已变化，请选择保留的版本";
             event.syncState = "conflict";
             event.error = change.error;
             await this.commit();
             continue;
           } else if (change.action === "delete")
-            await this.feishu.delete(calendar, event.remoteId!);
-          else remote = await this.feishu.update(calendar, event, remote);
+            await client.delete(calendar, event.remoteId!, remote);
+          else remote = await client.update(calendar, event, remote);
         }
         if (event.deleted)
           this.store.state.events = this.store.state.events.filter(
@@ -409,9 +523,11 @@ export class CalendarService {
           Object.assign(event, {
             remoteId: remote!.remoteId,
             remoteFingerprint: remote!.remoteFingerprint,
+            remoteEtag: remote!.remoteEtag,
             syncState: "synced",
             error: undefined,
-            recurrence: "",
+            recurrence:
+              calendar.provider === "webdav" ? remote!.recurrence : "",
             recurring: remote!.recurring,
           });
         this.store.state.queue = this.store.state.queue.filter(
@@ -436,7 +552,10 @@ export class CalendarService {
         if (!auth.available) throw new Error(auth.message);
         const calendars = await this.feishu.calendars();
         for (const calendar of calendars) this.mergeCalendar(calendar);
-        await this.pushQueue();
+        await this.pushQueue(
+          this.feishu,
+          new Set(calendars.map((item) => item.id)),
+        );
         for (const calendar of calendars) {
           try {
             this.mergeEvents(
@@ -453,26 +572,70 @@ export class CalendarService {
       }
     }
     for (const connection of this.store.state.connections) {
+      if (connection.enabled === false) continue;
       try {
         const secret = await this.vault.read(connection.id);
         if (!secret) throw new Error("本地连接凭据缺失，请重新填写");
-        const result = await fetchSubscription(
-          { ...connection, ...secret },
-          range,
-        );
-        for (const calendar of result.calendars) {
-          this.mergeCalendar(calendar);
-          this.mergeEvents(
-            calendar.id,
-            result.events.filter((item) => item.calendarId === calendar.id),
-            range,
+        const details = {
+          ...secret,
+          ...connection,
+          url: secret.url,
+          username: secret.username,
+          password: secret.password,
+        };
+        if (connection.kind === "ics") {
+          const result = await fetchSubscription(details, range);
+          for (const calendar of result.calendars) {
+            this.mergeCalendar(calendar);
+            this.mergeEvents(
+              calendar.id,
+              result.events.filter((item) => item.calendarId === calendar.id),
+              range,
+            );
+          }
+        } else {
+          const client = this.makeClient(details);
+          const calendars = await client.calendars();
+          for (const calendar of calendars) this.mergeCalendar(calendar);
+          await this.pushQueue(
+            client,
+            new Set(
+              calendars.filter((item) => item.writable).map((item) => item.id),
+            ),
           );
+          for (const calendar of calendars) {
+            this.mergeEvents(
+              calendar.id,
+              await client.events(calendar, range),
+              range,
+              connection.kind === "webdav",
+            );
+          }
+          if (
+            connection.kind === "webdav" &&
+            connection.syncTeaching &&
+            client instanceof WebDAVClient
+          ) {
+            const result = await client.syncTeaching(
+              teachingSchema.parse(this.store.state.settings),
+              connection.teachingBase,
+            );
+            connection.teachingConflict = result.conflict;
+            if (!result.conflict) {
+              Object.assign(this.store.state.settings, result.value);
+              connection.teachingBase = result.value;
+            }
+          }
         }
         connection.lastSync = new Date().toISOString();
-        connection.error = undefined;
-      } catch {
+        connection.error = connection.teachingConflict
+          ? "教学周配置存在冲突，请在同步记录中选择版本"
+          : undefined;
+        if (connection.error)
+          errors.push(`${connection.name} · ${connection.error}`);
+      } catch (error) {
         connection.error =
-          "订阅读取失败，请检查服务器地址、账号密码和网络，原有缓存已保留";
+          (error as Error).message || "同步失败，请检查连接设置";
         errors.push(`${connection.name} · ${connection.error}`);
       }
     }
@@ -481,6 +644,28 @@ export class CalendarService {
     this.store.state.syncError = errors.join("\n") || undefined;
     if (errors.length === 0)
       this.store.state.lastSync = new Date().toISOString();
+    return this.commit();
+  }
+
+  async resolveTeachingConflict(id: string, choice: "remote" | "local") {
+    const connection = this.store.state.connections.find(
+      (item) => item.id === id,
+    );
+    const secret = await this.vault.read(id);
+    if (!connection || connection.kind !== "webdav" || !secret)
+      throw new Error("找不到 WebDAV 连接");
+    const client = this.makeClient(secret);
+    if (!(client instanceof WebDAVClient))
+      throw new Error("此连接不支持教学周同步");
+    const result = await client.syncTeaching(
+      teachingSchema.parse(this.store.state.settings),
+      connection.teachingBase,
+      choice,
+    );
+    Object.assign(this.store.state.settings, result.value);
+    connection.teachingBase = result.value;
+    connection.teachingConflict = undefined;
+    connection.error = undefined;
     return this.commit();
   }
 
@@ -507,6 +692,7 @@ export class CalendarService {
         change.action = "create";
         change.id = randomUUID();
         event.remoteId = undefined;
+        change.creation = undefined;
       }
       event.syncState = "pending";
       event.error = undefined;

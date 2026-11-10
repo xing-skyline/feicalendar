@@ -28,6 +28,15 @@ export function emptyState(): AppSnapshot {
       weekends: true,
       theme: "light",
       calendarView: "timeGridWeek",
+      closeToTray: true,
+      weekStartsOn: 1,
+      hour12: false,
+      dayStartHour: 0,
+      dayEndHour: 24,
+      defaultDurationMinutes: 60,
+      defaultReminder: 10,
+      teachingStartDate: "",
+      teachingWeeks: 20,
     },
   };
 }

@@ -9,3 +9,7 @@ test-results/
 .DS_Store
 *.local
 .runtime/
+calendar.json*
+connections.encrypted*
+.lark/
+.lark-cli/

@@ -5,6 +5,8 @@ import {
   ipcMain,
   Notification,
   shell,
+  Menu,
+  Tray,
 } from "electron";
 import path from "node:path";
 import { existsSync } from "node:fs";
@@ -27,9 +29,20 @@ if (process.env.FEICALENDAR_DATA_DIR)
 const hasLock = app.requestSingleInstanceLock();
 if (!hasLock) app.quit();
 let window: BrowserWindow | null = null;
-app.on("second-instance", () => {
+let tray: Tray | null = null;
+let quitting = false;
+function showWindow() {
+  if (window?.isMinimized()) window.restore();
   window?.show();
   window?.focus();
+}
+app.on("second-instance", showWindow);
+app.on("before-quit", () => {
+  quitting = true;
+});
+app.on("will-quit", () => {
+  tray?.destroy();
+  tray = null;
 });
 
 const text = z.string().max(20_000);
@@ -64,6 +77,7 @@ const eventSchema = z
     syncState: z.enum(["local", "synced", "pending", "error", "conflict"]),
     remoteId: id.optional(),
     remoteFingerprint: text.optional(),
+    remoteEtag: text.optional(),
     recurring: z.boolean().optional(),
     seriesId: id.optional(),
     occurrenceStart: date.optional(),
@@ -187,6 +201,24 @@ async function main() {
               weekends: z.boolean().optional(),
               theme: z.enum(["light", "dark", "system"]).optional(),
               calendarView: z.enum(CALENDAR_VIEWS).optional(),
+              closeToTray: z.boolean().optional(),
+              weekStartsOn: z
+                .union([z.literal(0), z.literal(1), z.literal(6)])
+                .optional(),
+              hour12: z.boolean().optional(),
+              dayStartHour: z.number().int().min(0).max(23).optional(),
+              dayEndHour: z.number().int().min(1).max(24).optional(),
+              defaultDurationMinutes: z
+                .number()
+                .int()
+                .min(15)
+                .max(240)
+                .optional(),
+              defaultReminder: z.number().int().min(-1).max(20160).optional(),
+              teachingStartDate: z
+                .union([z.literal(""), z.iso.date()])
+                .optional(),
+              teachingWeeks: z.number().int().min(1).max(104).optional(),
             })
             .parse(patch),
         ),
@@ -198,16 +230,26 @@ async function main() {
             .object({
               id: z.string().max(100),
               name: z.string().trim().min(1).max(100),
-              kind: z.enum(["caldav", "ics"]),
+              kind: z.enum(["caldav", "webdav", "ics"]),
               url: z.string().max(4000),
               username: z.string().max(1000),
               password: z.string().max(1000).optional(),
+              enabled: z.boolean().optional(),
+              readOnly: z.boolean().optional(),
+              syncTeaching: z.boolean().optional(),
             })
             .parse(input) as Connection,
         ),
       ),
     "remove-connection": (value) =>
       service.exclusive(() => service.removeConnection(id.parse(value))),
+    "resolve-teaching-conflict": (value, choice) =>
+      service.exclusive(() =>
+        service.resolveTeachingConflict(
+          id.parse(value),
+          z.enum(["local", "remote"]).parse(choice),
+        ),
+      ),
     "auth-status": () => feishu.authStatus(),
     "configure-app": (appId, appSecret) =>
       service.exclusive(async () => {
@@ -294,6 +336,7 @@ async function main() {
   };
   for (const [name, handler] of Object.entries(handlers)) {
     ipcMain.handle(`calendar:${name}`, async (event, ...args) => {
+      if (quitting) throw new Error("飞历正在退出");
       if (
         event.sender !== window?.webContents ||
         event.senderFrame !== window.webContents.mainFrame
@@ -328,6 +371,15 @@ async function main() {
       sandbox: true,
       spellcheck: false,
     },
+  });
+  window.on("close", (event) => {
+    if (!quitting && store.state.settings.closeToTray && tray) {
+      event.preventDefault();
+      window?.hide();
+    }
+  });
+  window.on("query-session-end", () => {
+    quitting = true;
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -375,14 +427,34 @@ async function main() {
           title: event.title,
           body: event.location || "日程即将开始",
         });
-        notification.on("click", () => {
-          window?.show();
-          window?.focus();
-        });
+        notification.on("click", showWindow);
         notification.show();
       }
     }
   }, 15_000);
+  tray = new Tray(path.join(app.getAppPath(), "build", "icon.ico"));
+  tray.setToolTip("飞历 FeiCalendar");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "打开飞历", click: showWindow },
+      { type: "separator" },
+      {
+        label: "退出飞历",
+        click: async () => {
+          if (quitting) return;
+          quitting = true;
+          clearInterval(timer);
+          tray?.setToolTip("飞历正在退出…");
+          window?.hide();
+          // Finish queued saves and sync operations before releasing the profile.
+          await service.exclusive(async () => {});
+          app.quit();
+        },
+      },
+    ]),
+  );
+  tray.on("click", showWindow);
+  tray.on("double-click", showWindow);
   window.on("closed", () => {
     clearInterval(timer);
     window = null;

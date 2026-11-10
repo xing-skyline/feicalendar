@@ -45,7 +45,14 @@ import type {
   DateRange,
   EventSave,
 } from "./shared/types";
-import { dateKey, shiftDate, overlaps, TIME_ZONE } from "./shared/dates";
+import {
+  dateKey,
+  shiftDate,
+  overlaps,
+  TIME_ZONE,
+  hourTime,
+  teachingWeek,
+} from "./shared/dates";
 import { expandLocalEvents } from "./shared/recurrence";
 import MiniCalendar from "./components/MiniCalendar";
 import EventEditor from "./components/EventEditor";
@@ -94,7 +101,8 @@ const customViews = {
 const providerLabel = {
   local: "本地",
   feishu: "飞书",
-  caldav: "订阅",
+  caldav: "CalDAV",
+  webdav: "WebDAV",
   ics: "订阅",
 };
 
@@ -207,7 +215,10 @@ export default function App() {
       const eventStart = start || defaultStart.toISOString();
       const eventEnd =
         end ||
-        new Date(new Date(eventStart).getTime() + 3600_000).toISOString();
+        new Date(
+          new Date(eventStart).getTime() +
+            snapshot.settings.defaultDurationMinutes * 60_000,
+        ).toISOString();
       const writable =
         snapshot.calendars.find(
           (item) =>
@@ -222,7 +233,7 @@ export default function App() {
         calendarId: writable.id,
         description: "",
         location: "",
-        reminder: 10,
+        reminder: snapshot.settings.defaultReminder,
         recurrence: "",
         completed: false,
         syncState: "local",
@@ -270,6 +281,20 @@ export default function App() {
           .map((item) => item.id),
       ),
     [snapshot?.calendars],
+  );
+  const calculateTeachingWeek = useCallback(
+    (date: Date) =>
+      teachingWeek(
+        dateKey(date),
+        snapshot?.settings.teachingStartDate || "",
+        snapshot?.settings.teachingWeeks ?? 20,
+        snapshot?.settings.weekStartsOn ?? 1,
+      ) ?? 0,
+    [
+      snapshot?.settings.teachingStartDate,
+      snapshot?.settings.teachingWeeks,
+      snapshot?.settings.weekStartsOn,
+    ],
   );
   const occurrences = useMemo(
     () => expandLocalEvents(snapshot?.events || [], range),
@@ -351,14 +376,17 @@ export default function App() {
         : { start: info.startStr, end: info.endStr },
     );
     const date = info.view.calendar.getDate();
-    setMiniMonth(date);
-    setSelectedDate(date);
+    setMiniMonth((previous) =>
+      previous.getTime() === date.getTime() ? previous : date,
+    );
+    setSelectedDate((previous) =>
+      previous.getTime() === date.getTime() ? previous : date,
+    );
   }, []);
   const saveEvent = async (input: EventSave) => {
     setSnapshot(await window.calendar.saveEvent(input));
     setToast("日程已保存");
-    if (snapshot?.settings.autoSync && snapshot.settings.feishuEnabled)
-      void sync().catch(showError);
+    if (snapshot?.settings.autoSync) void sync().catch(showError);
   };
   const dragEvent = (event: EventApi, revert: () => void) => {
     const model = event.extendedProps.model as CalendarEvent;
@@ -396,6 +424,12 @@ export default function App() {
   const connected =
     snapshot.settings.feishuEnabled || snapshot.connections.length > 0;
   const pending = snapshot.queue.length;
+  const teachingWeekNumber = teachingWeek(
+    dateKey(selectedDate),
+    snapshot.settings.teachingStartDate,
+    snapshot.settings.teachingWeeks,
+    snapshot.settings.weekStartsOn,
+  );
   return (
     <div className="app-shell">
       <header className="titlebar">
@@ -417,7 +451,7 @@ export default function App() {
             <Square size={11} />
           </button>
           <button
-            title="关闭应用"
+            title={snapshot.settings.closeToTray ? "最小化到托盘" : "关闭应用"}
             className="window-close"
             onClick={() => window.calendar.window("close")}
           >
@@ -486,6 +520,7 @@ export default function App() {
           <MiniCalendar
             month={miniMonth}
             selected={selectedDate}
+            weekStartsOn={snapshot.settings.weekStartsOn}
             onMonth={setMiniMonth}
             onSelect={navigate}
           />
@@ -686,6 +721,12 @@ export default function App() {
                 </button>
               ))}
             </div>
+            {teachingWeekNumber !== null && (
+              <span className="teaching-week-summary" aria-label="当前教学周">
+                教学第 {teachingWeekNumber} 周
+                <small>共 {snapshot.settings.teachingWeeks} 周</small>
+              </span>
+            )}
           </div>
           <div className="calendar-and-agenda">
             <section
@@ -703,25 +744,36 @@ export default function App() {
                 views={customViews}
                 headerToolbar={false}
                 height="100%"
-                firstDay={1}
+                firstDay={snapshot.settings.weekStartsOn}
+                weekNumbers={Boolean(snapshot.settings.teachingStartDate)}
+                weekText="教学周"
+                weekNumberCalculation={calculateTeachingWeek}
+                weekNumberContent={(info) =>
+                  info.num > 0 ? `第 ${info.num} 周` : ""
+                }
                 nowIndicator
                 weekends={snapshot.settings.weekends}
                 allDaySlot
                 allDayText="全天"
-                slotMinTime="00:00:00"
-                slotMaxTime="24:00:00"
-                scrollTime="07:00:00"
+                slotMinTime={hourTime(snapshot.settings.dayStartHour)}
+                slotMaxTime={hourTime(snapshot.settings.dayEndHour)}
+                scrollTime={hourTime(
+                  Math.min(
+                    Math.max(7, snapshot.settings.dayStartHour),
+                    snapshot.settings.dayEndHour - 1,
+                  ),
+                )}
                 slotDuration="00:30:00"
                 snapDuration="00:15:00"
                 slotLabelFormat={{
                   hour: "2-digit",
                   minute: "2-digit",
-                  hour12: false,
+                  hour12: snapshot.settings.hour12,
                 }}
                 eventTimeFormat={{
                   hour: "2-digit",
                   minute: "2-digit",
-                  hour12: false,
+                  hour12: snapshot.settings.hour12,
                 }}
                 dayHeaderContent={(info) => (
                   <div className="calendar-day-heading">
@@ -736,7 +788,12 @@ export default function App() {
                   navigate(date);
                   changeView("timeGridDay");
                 }}
+                navLinkWeekClick={(date) => {
+                  navigate(date);
+                  changeView("timeGridWeek");
+                }}
                 selectable
+                selectMinDistance={4}
                 selectMirror
                 editable
                 eventResizableFromStart
@@ -746,6 +803,13 @@ export default function App() {
                 datesSet={datesSet}
                 noEventsContent="这一时段还没有日程"
                 moreLinkContent={(args) => `+${args.num} 项日程`}
+                dateClick={(info) =>
+                  newEvent(
+                    info.dateStr,
+                    info.allDay ? shiftDate(info.dateStr, 1) : undefined,
+                    info.allDay,
+                  )
+                }
                 select={(info) => {
                   newEvent(info.startStr, info.endStr, info.allDay);
                   info.view.calendar.unselect();
@@ -817,6 +881,7 @@ export default function App() {
                             ? event.start
                             : new Date(event.start).toLocaleString("zh-CN", {
                                 timeZone: TIME_ZONE,
+                                hour12: snapshot.settings.hour12,
                               })}
                           {event.location && ` · ${event.location}`}
                         </small>
@@ -865,6 +930,7 @@ export default function App() {
                                   timeZone: TIME_ZONE,
                                   hour: "2-digit",
                                   minute: "2-digit",
+                                  hour12: snapshot.settings.hour12,
                                 },
                               )}
                         </small>
@@ -926,12 +992,12 @@ export default function App() {
           key={`${editor.id}/${editor.start}`}
           initial={editor}
           calendars={snapshot.calendars}
+          defaultDurationMinutes={snapshot.settings.defaultDurationMinutes}
           onSave={saveEvent}
           onDelete={async (id, scope) => {
             setSnapshot(await window.calendar.deleteEvent(id, scope));
             setToast("日程已删除");
-            if (snapshot.settings.autoSync && snapshot.settings.feishuEnabled)
-              void sync().catch(showError);
+            if (snapshot.settings.autoSync) void sync().catch(showError);
           }}
           onClose={() => setEditor(undefined)}
           onDuplicate={(event) =>
@@ -940,6 +1006,7 @@ export default function App() {
               id: "",
               remoteId: undefined,
               remoteFingerprint: undefined,
+              remoteEtag: undefined,
               seriesId: undefined,
               occurrenceStart: undefined,
               recurrence: "",
@@ -1029,26 +1096,26 @@ export default function App() {
             {calendarForm.id &&
               calendarForm.provider === "local" &&
               snapshot.calendars.some(
-                (item) => item.provider === "feishu" && item.writable,
+                (item) => item.provider !== "local" && item.writable,
               ) && (
                 <div className="publish-calendar">
-                  <h4>将已有日程迁移到飞书</h4>
+                  <h4>将已有日程迁移到云端</h4>
                   <p>
-                    日程将移入选中的飞书日历并加入同步队列，该日历也将成为默认日历。
+                    日程将移入选中的云端日历并加入同步队列，该日历也将成为默认日历。
                   </p>
                   <select
                     aria-label="迁移目标日历"
                     value={publishTarget}
                     onChange={(e) => setPublishTarget(e.target.value)}
                   >
-                    <option value="">选择飞书目标日历</option>
+                    <option value="">选择云端目标日历</option>
                     {snapshot.calendars
                       .filter(
-                        (item) => item.provider === "feishu" && item.writable,
+                        (item) => item.provider !== "local" && item.writable,
                       )
                       .map((item) => (
                         <option key={item.id} value={item.id}>
-                          {item.name}
+                          {item.name} · {providerLabel[item.provider]}
                         </option>
                       ))}
                   </select>

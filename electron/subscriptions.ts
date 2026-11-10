@@ -1,4 +1,5 @@
 import ical from "node-ical";
+import ICAL from "ical.js";
 import { createDAVClient } from "tsdav";
 import type {
   CalendarEvent,
@@ -15,9 +16,9 @@ export function checkedUrl(value: string): URL {
   return url;
 }
 
-function calendarDay(date: Date & { tz?: string }): string {
+export function calendarDay(date: Date & { tz?: string }): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: date.tz || "UTC",
+    timeZone: date.tz,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -27,10 +28,17 @@ function calendarDay(date: Date & { tz?: string }): string {
     .join("-");
 }
 
+function parameterText(value: unknown): string {
+  if (value && typeof value === "object" && "val" in value)
+    return String(value.val);
+  return String(value || "");
+}
+
 export async function parseSubscription(
   text: string,
   calendarId: string,
   range: DateRange,
+  remoteObject?: { url: string; etag?: string },
 ): Promise<CalendarEvent[]> {
   if (!text.includes("BEGIN:VCALENDAR"))
     throw new Error("订阅地址返回的内容不是 iCalendar 数据");
@@ -62,10 +70,23 @@ export async function parseSubscription(
         ? calendarDay(instance.end)
         : instance.end.toISOString();
       if (!overlaps(start, end, range)) continue;
+      const occurrence = source.recurrenceid || instance.start;
+      const remoteId = remoteObject
+        ? remoteObject.url +
+          (instance.isRecurring
+            ? `#${encodeURIComponent(allDay ? calendarDay(occurrence) : occurrence.toISOString())}`
+            : "")
+        : undefined;
+      const alarm = source.alarms?.find((item) => item.action === "DISPLAY");
+      let reminder = -1;
+      if (typeof alarm?.trigger === "string" && /^-?P/.test(alarm.trigger)) {
+        const seconds = ICAL.Duration.fromString(alarm.trigger).toSeconds();
+        if (seconds <= 0) reminder = -seconds / 60;
+      }
       const event: CalendarEvent = {
         id: `${calendarId}/${component.uid}/${instance.start.toISOString()}`,
         calendarId,
-        title: String(instance.summary || "未命名日程"),
+        title: parameterText(instance.summary) || "未命名日程",
         start,
         end:
           end > start
@@ -74,13 +95,15 @@ export async function parseSubscription(
               ? shiftDate(start, 1)
               : new Date(instance.start.getTime() + 3600_000).toISOString(),
         allDay,
-        description: String(source.description || ""),
-        location: String(source.location || ""),
-        reminder: -1,
+        description: parameterText(source.description),
+        location: parameterText(source.location),
+        reminder,
         recurrence: "",
-        recurring: Boolean(component.rrule),
+        recurring: instance.isRecurring,
         completed: false,
         syncState: "synced",
+        remoteId,
+        remoteEtag: remoteObject?.etag,
       };
       result.set(event.id, event);
     }
@@ -212,6 +235,14 @@ export function exportICS(events: CalendarEvent[]): string {
         `EXDATE${event.allDay ? ";VALUE=DATE" : ""}:${event.exceptions.map((value) => date(event.allDay ? value : new Date(value).toISOString())).join(",")}`,
       );
     }
+    if (event.reminder >= 0)
+      lines.push(
+        "BEGIN:VALARM",
+        "ACTION:DISPLAY",
+        `DESCRIPTION:${escape(event.title)}`,
+        `TRIGGER:${event.reminder === 0 ? "PT0S" : `-PT${event.reminder}M`}`,
+        "END:VALARM",
+      );
     lines.push("END:VEVENT");
   }
   lines.push("END:VCALENDAR");

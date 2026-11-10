@@ -1,4 +1,4 @@
-export type Provider = "local" | "feishu" | "caldav" | "ics";
+export type Provider = "local" | "feishu" | "caldav" | "webdav" | "ics";
 export type SyncState = "local" | "synced" | "pending" | "error" | "conflict";
 export const CALENDAR_VIEWS = [
   "timeGridDay",
@@ -36,6 +36,7 @@ export interface CalendarEvent {
   syncState: SyncState;
   remoteId?: string;
   remoteFingerprint?: string;
+  remoteEtag?: string;
   recurring?: boolean;
   seriesId?: string;
   occurrenceStart?: string;
@@ -47,7 +48,7 @@ export interface CalendarEvent {
 
 export interface Connection {
   id: string;
-  kind: "caldav" | "ics";
+  kind: "caldav" | "webdav" | "ics";
   name: string;
   url: string;
   username: string;
@@ -55,6 +56,17 @@ export interface Connection {
   hasPassword?: boolean;
   lastSync?: string;
   error?: string;
+  enabled?: boolean;
+  readOnly?: boolean;
+  syncTeaching?: boolean;
+  teachingBase?: TeachingSettings;
+  teachingConflict?: TeachingSettings;
+}
+
+export interface TeachingSettings {
+  teachingStartDate: string;
+  teachingWeeks: number;
+  weekStartsOn: 0 | 1 | 6;
 }
 
 export interface PendingChange {
@@ -65,6 +77,7 @@ export interface PendingChange {
   status: "pending" | "error" | "conflict";
   error?: string;
   remote?: CalendarEvent;
+  creation?: CalendarEvent;
 }
 
 export interface Settings {
@@ -76,6 +89,15 @@ export interface Settings {
   weekends: boolean;
   theme: "light" | "dark" | "system";
   calendarView: CalendarView;
+  closeToTray: boolean;
+  weekStartsOn: 0 | 1 | 6;
+  hour12: boolean;
+  dayStartHour: number;
+  dayEndHour: number;
+  defaultDurationMinutes: number;
+  defaultReminder: number;
+  teachingStartDate: string;
+  teachingWeeks: number;
 }
 
 export interface AppSnapshot {
@@ -124,6 +146,10 @@ export interface DesktopAPI {
   settings(patch: Partial<Settings>): Promise<AppSnapshot>;
   saveConnection(connection: Connection): Promise<AppSnapshot>;
   removeConnection(id: string): Promise<AppSnapshot>;
+  resolveTeachingConflict(
+    id: string,
+    choice: "remote" | "local",
+  ): Promise<AppSnapshot>;
   authStatus(): Promise<AuthStatus>;
   configureApp(appId: string, appSecret: string): Promise<void>;
   authStart(): Promise<AuthChallenge>;
