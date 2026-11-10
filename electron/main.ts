@@ -9,8 +9,9 @@ import {
   Tray,
 } from "electron";
 import path from "node:path";
-import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { existsSync, watch } from "node:fs";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import QRCode from "qrcode";
 import { Store } from "./store";
@@ -354,6 +355,22 @@ async function main() {
     });
   }
 
+  const iconSource = path.join(app.getAppPath(), "build", "icon.ico");
+  // Windows shell cannot resolve icons inside app.asar or retain a portable
+  // launcher's temporary extraction path after the application exits.
+  const iconHash = createHash("sha256")
+    .update(await readFile(iconSource))
+    .digest("hex")
+    .slice(0, 12);
+  const shellIcon = path.join(directory, `app-icon-${iconHash}.ico`);
+  await copyFile(iconSource, shellIcon);
+  const executable = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  // Initialize Electron's Windows notification registration before correcting
+  // its automatically generated shortcut to point at the portable launcher.
+  const notificationsSupported =
+    process.env.FEICALENDAR_DISABLE_NOTIFICATIONS !== "1" &&
+    Notification.isSupported();
+
   window = new BrowserWindow({
     width: 1500,
     height: 950,
@@ -372,6 +389,82 @@ async function main() {
       spellcheck: false,
     },
   });
+  if (process.platform === "win32" && app.isPackaged) {
+    window.setAppDetails({
+      appId: "cn.xingskyline.feicalendar",
+      appIconPath: shellIcon,
+      appIconIndex: 0,
+      relaunchCommand: `"${executable}"`,
+      relaunchDisplayName: "飞历 FeiCalendar",
+    });
+    if (!process.env.FEICALENDAR_DATA_DIR) {
+      const shortcut = path.join(
+        app.getPath("appData"),
+        "Microsoft",
+        "Windows",
+        "Start Menu",
+        "Programs",
+        "FeiCalendar.lnk",
+      );
+      try {
+        await mkdir(path.dirname(shortcut), { recursive: true });
+        const details = {
+          target: executable,
+          args: "",
+          cwd: path.dirname(executable),
+          icon: shellIcon,
+          iconIndex: 0,
+          appUserModelId: "cn.xingskyline.feicalendar",
+          description: "飞历 FeiCalendar 桌面日历",
+        };
+        const updateShortcut = () => {
+          try {
+            const present = existsSync(shortcut);
+            const current = present ? shell.readShortcutLink(shortcut) : null;
+            if (
+              current &&
+              Object.entries(details).every(
+                ([key, value]) =>
+                  current[key as keyof typeof current] === value,
+              )
+            )
+              return;
+            // Updating preserves Electron's ToastActivatorCLSID for notifications.
+            if (
+              !shell.writeShortcutLink(
+                shortcut,
+                present ? "update" : "create",
+                details,
+              )
+            )
+              console.warn("无法更新飞历开始菜单入口");
+          } catch {
+            console.warn("飞历开始菜单入口暂时不可写入");
+          }
+        };
+        // Electron registers notifications on a worker thread and can replace
+        // the shortcut after startup. Reconcile only our own link when it changes.
+        let shortcutUpdate: ReturnType<typeof setTimeout> | undefined;
+        const watcher = watch(path.dirname(shortcut), (_event, filename) => {
+          if (
+            filename &&
+            filename.toString().toLowerCase() !== "feicalendar.lnk"
+          )
+            return;
+          clearTimeout(shortcutUpdate);
+          shortcutUpdate = setTimeout(updateShortcut, 100);
+        });
+        watcher.on("error", () => console.warn("无法监听飞历开始菜单入口"));
+        app.once("will-quit", () => {
+          clearTimeout(shortcutUpdate);
+          watcher.close();
+        });
+        updateShortcut();
+      } catch {
+        console.warn("当前 Windows 用户无法写入飞历开始菜单入口");
+      }
+    }
+  }
   window.on("close", (event) => {
     if (!quitting && store.state.settings.closeToTray && tray) {
       event.preventDefault();
@@ -411,7 +504,7 @@ async function main() {
       elapsed = 0;
       void sync(range).catch(() => {});
     }
-    if (!store.state.settings.reminders || !Notification.isSupported()) return;
+    if (!store.state.settings.reminders || !notificationsSupported) return;
     const now = Date.now();
     const upcoming = expandLocalEvents(store.state.events, {
       start: new Date(now - 60_000).toISOString(),
@@ -432,7 +525,7 @@ async function main() {
       }
     }
   }, 15_000);
-  tray = new Tray(path.join(app.getAppPath(), "build", "icon.ico"));
+  tray = new Tray(shellIcon);
   tray.setToolTip("飞历 FeiCalendar");
   tray.setContextMenu(
     Menu.buildFromTemplate([

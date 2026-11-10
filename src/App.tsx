@@ -575,7 +575,7 @@ export default function App() {
               onClick={() => setSettingsTab("connections")}
             >
               <Plus size={15} />
-              添加日历订阅
+              添加日历连接
             </button>
           </div>
           <div className="sidebar-bottom">
@@ -598,7 +598,7 @@ export default function App() {
                         ? `${pending} 项修改待同步`
                         : connected
                           ? "日历已连接"
-                          : "连接飞书日历"}
+                          : "连接日历账号"}
                 </span>
                 <small>
                   {snapshot.lastSync
@@ -964,16 +964,16 @@ export default function App() {
                 )}
                 {!connected && (
                   <div className="connect-prompt">
-                    <span className="feishu-logo">
+                    <span className="connection-logo">
                       <Cloud size={22} />
                     </span>
-                    <h4>飞书日程，汇聚于此</h4>
+                    <h4>连接你的日历</h4>
                     <p>连接账号或添加日历订阅，在一个窗口里安排工作与生活。</p>
                     <button
                       className="secondary"
                       onClick={() => setSettingsTab("connections")}
                     >
-                      连接飞书
+                      连接日历
                       <ChevronRight size={15} />
                     </button>
                   </div>

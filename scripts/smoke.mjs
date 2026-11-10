@@ -9,7 +9,11 @@ import { checkSyncConnections } from "./check-connections.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const directory = await mkdtemp(path.join(os.tmpdir(), "feicalendar-desktop-"));
-const env = { ...process.env, FEICALENDAR_DATA_DIR: directory };
+const env = {
+  ...process.env,
+  FEICALENDAR_DATA_DIR: directory,
+  FEICALENDAR_DISABLE_NOTIFICATIONS: "1",
+};
 delete env.ELECTRON_RUN_AS_NODE;
 const errors = [];
 const launchOptions = process.env.FEICALENDAR_EXECUTABLE

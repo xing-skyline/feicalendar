@@ -1,5 +1,6 @@
 import { chromium, expect } from "@playwright/test";
 import { spawn, execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   copyFile,
   mkdir,
@@ -29,6 +30,11 @@ const directory = await mkdtemp(
 const firstLocation = path.join(directory, "飞历 独立目录");
 const secondLocation = path.join(directory, "移动后的 便携目录");
 const dataDirectory = path.join(directory, "用户数据");
+const sourceIcon = await readFile(path.join(root, "build", "icon.ico"));
+const iconHash = createHash("sha256")
+  .update(sourceIcon)
+  .digest("hex")
+  .slice(0, 12);
 const screenshots = path.join(root, "test-results");
 await mkdir(firstLocation);
 await mkdir(secondLocation);
@@ -40,7 +46,11 @@ await copyFile(
     path.join(root, "release", `FeiCalendar-${version}-win-x64.exe`),
   executable,
 );
-const env = { ...process.env, FEICALENDAR_DATA_DIR: dataDirectory };
+const env = {
+  ...process.env,
+  FEICALENDAR_DATA_DIR: dataDirectory,
+  FEICALENDAR_DISABLE_NOTIFICATIONS: "1",
+};
 for (const key of Object.keys(env)) {
   if (key.toLowerCase() === "path") delete env[key];
 }
@@ -104,6 +114,9 @@ async function launch() {
   await expect(page.getByRole("heading", { name: "我的日历" })).toBeVisible({
     timeout: 20_000,
   });
+  expect(
+    await readFile(path.join(dataDirectory, `app-icon-${iconHash}.ico`)),
+  ).toEqual(sourceIcon);
   return page;
 }
 
