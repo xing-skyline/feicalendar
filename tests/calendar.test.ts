@@ -1,6 +1,6 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { emptyState, Store } from "../electron/store";
@@ -322,4 +322,33 @@ test("local recurrence single edit leaves other instances and whole-series dates
   const expanded = expandLocalEvents(f.store.state.events, range);
   assert.equal(expanded.filter((item) => item.title === "单次修改").length, 1);
   assert.equal(expanded.length, 21);
+});
+
+test("existing profiles without a valid saved view retain their data and open the week view", async (t) => {
+  const directory = await mkdtemp(
+    path.join(os.tmpdir(), "feicalendar-migration-"),
+  );
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const state = emptyState();
+  state.events = [event()];
+  const { calendarView, ...previousSettings } = state.settings;
+  const oldProfile = { ...state, settings: previousSettings };
+  await writeFile(
+    path.join(directory, "calendar.json"),
+    JSON.stringify(oldProfile),
+  );
+  const restored = new Store(directory);
+  await restored.load();
+  assert.equal(restored.state.settings.calendarView, "timeGridWeek");
+  assert.deepEqual(restored.state.events, state.events);
+  await writeFile(
+    path.join(directory, "calendar.json"),
+    JSON.stringify({
+      ...state,
+      settings: { ...state.settings, calendarView: "removedView" },
+    }),
+  );
+  await restored.load();
+  assert.equal(restored.state.settings.calendarView, "timeGridWeek");
+  assert.deepEqual(restored.state.events, state.events);
 });

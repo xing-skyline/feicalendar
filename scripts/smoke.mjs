@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { checkCalendarViews } from "./check-views.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const directory = await mkdtemp(path.join(os.tmpdir(), "feicalendar-desktop-"));
@@ -29,6 +30,11 @@ try {
     .first()
     .click();
   await page.getByLabel("日程标题", { exact: true }).fill("桌面验证日程");
+  const date = (
+    await page.getByLabel("开始时间", { exact: true }).inputValue()
+  ).slice(0, 10);
+  await page.getByLabel("开始时间", { exact: true }).fill(`${date}T09:00`);
+  await page.getByLabel("结束时间", { exact: true }).fill(`${date}T10:00`);
   await page.getByLabel("地点", { exact: true }).fill("会议室 201");
   await page
     .getByLabel("日程描述", { exact: true })
@@ -45,13 +51,7 @@ try {
   await page.getByLabel("搜索日程", { exact: true }).fill("编辑后");
   await expect(page.locator(".search-result")).toHaveCount(1);
   await page.getByLabel("关闭搜索", { exact: true }).click();
-  for (const name of ["日", "三日", "月", "年", "日程", "周"]) {
-    await page.getByRole("tab", { name, exact: true }).click();
-    await expect(page.getByRole("tab", { name, exact: true })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-  }
+  await checkCalendarViews(page, path.join(root, "test-results"), "desktop");
   await page.getByTitle("添加日历", { exact: true }).click();
   await page.getByLabel("日历名称", { exact: true }).fill("生活安排");
   await page.getByRole("button", { name: "保存日历", exact: true }).click();
@@ -95,9 +95,6 @@ try {
   await page.evaluate(() =>
     window.calendar.removeConnection("encryption-test"),
   );
-  await page.screenshot({
-    path: path.join(root, "test-results", "desktop-week.png"),
-  });
   await page.getByLabel("搜索日程", { exact: true }).fill("编辑后");
   await page.locator(".search-result").first().click();
   await page.getByTitle("删除日程", { exact: true }).click();
@@ -114,6 +111,23 @@ try {
   state = await reopened.evaluate(() => window.calendar.snapshot());
   expect(state.events[0].title).toBe("每周规划");
   expect(state.calendars).toHaveLength(2);
+  await expect(
+    reopened.getByRole("tab", { name: "月视图", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(reopened.locator(".fc-dayGridMonth-view")).toBeVisible();
+  await application.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].setSize(1050, 700);
+  });
+  for (const tab of await reopened.getByRole("tab").all()) {
+    await expect(tab).toBeInViewport();
+    expect((await tab.boundingBox()).height).toBeGreaterThanOrEqual(36);
+  }
+  expect(
+    (await reopened.locator(".calendar-canvas").boundingBox()).width,
+  ).toBeGreaterThan(350);
+  await reopened.screenshot({
+    path: path.join(root, "test-results", "desktop-compact.png"),
+  });
   expect(errors).toEqual([]);
   console.log(
     "PASS desktop CRUD, search, six views, calendar creation, themes, recurrence, credential encryption, restart persistence",

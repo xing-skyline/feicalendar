@@ -1,7 +1,7 @@
 {
   "name": "feicalendar",
   "productName": "FeiCalendar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "飞历 — 连接飞书的桌面日历",
   "author": "xing-skyline",
   "private": true,
@@ -14,7 +14,8 @@
     "test": "tsx --test tests/*.test.ts",
     "check": "tsc --noEmit",
     "dist": "npm run build && electron-builder --win portable --x64",
-    "test:desktop": "node scripts/smoke.mjs"
+    "test:desktop": "node scripts/smoke.mjs",
+    "test:portable": "node scripts/portable-smoke.mjs"
   },
   "dependencies": {
     "@fullcalendar/core": "6.1.22",

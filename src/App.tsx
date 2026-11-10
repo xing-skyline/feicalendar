@@ -7,7 +7,11 @@ import listPlugin from "@fullcalendar/list";
 import multiMonthPlugin from "@fullcalendar/multimonth";
 import luxonPlugin from "@fullcalendar/luxon3";
 import zhLocale from "@fullcalendar/core/locales/zh-cn";
-import type { DatesSetArg, EventApi } from "@fullcalendar/core";
+import type {
+  DatesSetArg,
+  DayCellContentArg,
+  EventApi,
+} from "@fullcalendar/core";
 import { format } from "date-fns";
 import { zhCN } from "date-fns/locale";
 import {
@@ -37,6 +41,7 @@ import type {
   AppSnapshot,
   CalendarEvent,
   CalendarSource,
+  CalendarView,
   DateRange,
   EventSave,
 } from "./shared/types";
@@ -45,15 +50,20 @@ import { expandLocalEvents } from "./shared/recurrence";
 import MiniCalendar from "./components/MiniCalendar";
 import EventEditor from "./components/EventEditor";
 import SettingsDialog from "./components/SettingsDialog";
+import appIcon from "../build/icon.png";
 
 const views = [
-  { id: "timeGridDay", name: "日" },
-  { id: "timeGridThreeDay", name: "三日" },
-  { id: "timeGridWeek", name: "周" },
-  { id: "dayGridMonth", name: "月" },
-  { id: "multiMonthYear", name: "年" },
-  { id: "listMonth", name: "日程" },
-];
+  { id: "timeGridDay", name: "日视图" },
+  { id: "timeGridThreeDay", name: "三日视图" },
+  { id: "timeGridWeek", name: "周视图" },
+  { id: "dayGridMonth", name: "月视图" },
+  { id: "multiMonthYear", name: "年视图" },
+  { id: "listMonth", name: "日程列表" },
+] satisfies { id: CalendarView; name: string }[];
+const weekdayFormat = new Intl.DateTimeFormat("zh-CN", {
+  weekday: "short",
+  timeZone: TIME_ZONE,
+});
 const colors = [
   "#5474ee",
   "#19a58b",
@@ -70,7 +80,11 @@ const plugins = [
   multiMonthPlugin,
   luxonPlugin,
 ];
+const dayNumberContent = (info: DayCellContentArg) =>
+  Number(dateKey(info.date).slice(-2));
 const customViews = {
+  dayGridMonth: { dayCellContent: dayNumberContent },
+  multiMonthYear: { dayCellContent: dayNumberContent },
   timeGridThreeDay: {
     type: "timeGrid",
     duration: { days: 3 },
@@ -87,7 +101,7 @@ const providerLabel = {
 export default function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot>();
   const [loadingError, setLoadingError] = useState("");
-  const [view, setView] = useState("timeGridWeek");
+  const [view, setView] = useState<CalendarView>("timeGridWeek");
   const [title, setTitle] = useState("");
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [miniMonth, setMiniMonth] = useState(new Date());
@@ -315,9 +329,13 @@ export default function App() {
       .sort((a, b) => a.start.localeCompare(b.start))
       .slice(0, 100);
   }, [query, snapshot?.events]);
-  const changeView = (next: string) => {
-    setView(next);
+  const changeView = (next: CalendarView) => {
+    setQuery("");
     calendarRef.current?.getApi().changeView(next);
+    void window.calendar
+      .settings({ calendarView: next })
+      .then(setSnapshot)
+      .catch(showError);
   };
   const navigate = (date: Date) => {
     setSelectedDate(date);
@@ -325,13 +343,16 @@ export default function App() {
     calendarRef.current?.getApi().gotoDate(date);
   };
   const datesSet = useCallback((info: DatesSetArg) => {
+    setView(info.view.type as CalendarView);
     setTitle(info.view.title);
     setRange((previous) =>
       previous.start === info.startStr && previous.end === info.endStr
         ? previous
         : { start: info.startStr, end: info.endStr },
     );
-    setMiniMonth(info.view.currentStart);
+    const date = info.view.calendar.getDate();
+    setMiniMonth(date);
+    setSelectedDate(date);
   }, []);
   const saveEvent = async (input: EventSave) => {
     setSnapshot(await window.calendar.saveEvent(input));
@@ -363,7 +384,7 @@ export default function App() {
     return (
       <main className="loading">
         <div className="app-mark">
-          <CalendarDays size={25} />
+          <img src={appIcon} alt="" />
         </div>
         <h2>飞历</h2>
         <p>{loadingError || "正在打开你的日历…"}</p>
@@ -379,7 +400,7 @@ export default function App() {
     <div className="app-shell">
       <header className="titlebar">
         <span>
-          <CalendarDays size={14} />
+          <img className="titlebar-icon" src={appIcon} alt="" />
           飞历 <i>FeiCalendar</i>
         </span>
         <div className="window-actions">
@@ -411,10 +432,10 @@ export default function App() {
             title="飞历"
             onClick={() => navigate(new Date())}
           >
-            <CalendarDays size={24} />
+            <img src={appIcon} alt="飞历" />
           </button>
           <button
-            className="rail-button active"
+            className={`rail-button ${view !== "listMonth" ? "active" : ""}`}
             title="日历"
             onClick={() => {
               setQuery("");
@@ -424,7 +445,7 @@ export default function App() {
             <CalendarDays size={23} />
           </button>
           <button
-            className="rail-button"
+            className={`rail-button ${view === "listMonth" ? "active" : ""}`}
             title="日程列表"
             onClick={() => changeView("listMonth")}
           >
@@ -632,9 +653,34 @@ export default function App() {
                 <button
                   key={item.id}
                   role="tab"
+                  id={`view-${item.id}`}
+                  aria-controls="calendar-view"
                   aria-selected={view === item.id}
+                  tabIndex={view === item.id ? 0 : -1}
                   className={view === item.id ? "active" : ""}
                   onClick={() => changeView(item.id)}
+                  onKeyDown={(event) => {
+                    if (
+                      !["ArrowLeft", "ArrowRight", "Home", "End"].includes(
+                        event.key,
+                      )
+                    )
+                      return;
+                    event.preventDefault();
+                    const index = views.findIndex(
+                      (entry) => entry.id === item.id,
+                    );
+                    const nextIndex = {
+                      ArrowLeft: (index + views.length - 1) % views.length,
+                      ArrowRight: (index + 1) % views.length,
+                      Home: 0,
+                      End: views.length - 1,
+                    }[event.key]!;
+                    changeView(views[nextIndex].id);
+                    document
+                      .getElementById(`view-${views[nextIndex].id}`)
+                      ?.focus();
+                  }}
                 >
                   {item.name}
                 </button>
@@ -644,14 +690,16 @@ export default function App() {
           <div className="calendar-and-agenda">
             <section
               className={`calendar-canvas ${query ? "searching" : ""}`}
-              aria-label="日历"
+              id="calendar-view"
+              role="tabpanel"
+              aria-labelledby={`view-${view}`}
             >
               <FullCalendar
                 ref={calendarRef}
                 plugins={plugins}
                 locale={zhLocale}
                 timeZone={TIME_ZONE}
-                initialView="timeGridWeek"
+                initialView={snapshot.settings.calendarView}
                 views={customViews}
                 headerToolbar={false}
                 height="100%"
@@ -675,11 +723,24 @@ export default function App() {
                   minute: "2-digit",
                   hour12: false,
                 }}
-                dayHeaderFormat={{ weekday: "short", day: "numeric" }}
+                dayHeaderContent={(info) => (
+                  <div className="calendar-day-heading">
+                    <span>{weekdayFormat.format(info.date)}</span>
+                    {info.view.type.startsWith("timeGrid") && (
+                      <b>{Number(dateKey(info.date).slice(-2))}</b>
+                    )}
+                  </div>
+                )}
+                navLinks
+                navLinkDayClick={(date) => {
+                  navigate(date);
+                  changeView("timeGridDay");
+                }}
                 selectable
                 selectMirror
                 editable
                 eventResizableFromStart
+                eventDisplay="block"
                 dayMaxEvents={4}
                 events={fcEvents}
                 datesSet={datesSet}

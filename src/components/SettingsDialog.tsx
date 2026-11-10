@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { version } from "../../package.json";
 import {
   X,
   Link2,
@@ -118,7 +119,7 @@ export default function SettingsDialog({
                 <span className="count">{snapshot.queue.length}</span>
               )}
             </button>
-            <div className="settings-version">FeiCalendar 0.1.0</div>
+            <div className="settings-version">FeiCalendar {version}</div>
           </nav>
           <div className="settings-content">
             {tab === "connections" && (

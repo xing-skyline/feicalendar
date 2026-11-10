@@ -1,5 +1,14 @@
 export type Provider = "local" | "feishu" | "caldav" | "ics";
 export type SyncState = "local" | "synced" | "pending" | "error" | "conflict";
+export const CALENDAR_VIEWS = [
+  "timeGridDay",
+  "timeGridThreeDay",
+  "timeGridWeek",
+  "dayGridMonth",
+  "multiMonthYear",
+  "listMonth",
+] as const;
+export type CalendarView = (typeof CALENDAR_VIEWS)[number];
 
 export interface CalendarSource {
   id: string;
@@ -66,6 +75,7 @@ export interface Settings {
   reminders: boolean;
   weekends: boolean;
   theme: "light" | "dark" | "system";
+  calendarView: CalendarView;
 }
 
 export interface AppSnapshot {

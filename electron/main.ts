@@ -18,6 +18,7 @@ import { CalendarService } from "./service";
 import { exportICS } from "./subscriptions";
 import { expandLocalEvents } from "../src/shared/recurrence";
 import type { CalendarEvent, Connection, DateRange } from "../src/shared/types";
+import { CALENDAR_VIEWS } from "../src/shared/types";
 
 app.setName("FeiCalendar");
 app.setAppUserModelId("cn.xingskyline.feicalendar");
@@ -185,6 +186,7 @@ async function main() {
               reminders: z.boolean().optional(),
               weekends: z.boolean().optional(),
               theme: z.enum(["light", "dark", "system"]).optional(),
+              calendarView: z.enum(CALENDAR_VIEWS).optional(),
             })
             .parse(patch),
         ),

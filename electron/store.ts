@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile, rename, copyFile } from "node:fs/promises";
 import path from "node:path";
 import type { AppSnapshot } from "../src/shared/types";
+import { CALENDAR_VIEWS } from "../src/shared/types";
 
 export function emptyState(): AppSnapshot {
   return {
@@ -26,6 +27,7 @@ export function emptyState(): AppSnapshot {
       reminders: true,
       weekends: true,
       theme: "light",
+      calendarView: "timeGridWeek",
     },
   };
 }
@@ -62,6 +64,9 @@ export class Store {
       throw new Error("本地数据格式无法识别");
     }
     state.settings = { ...emptyState().settings, ...state.settings };
+    if (!CALENDAR_VIEWS.includes(state.settings.calendarView)) {
+      state.settings.calendarView = "timeGridWeek";
+    }
     return state;
   }
 
