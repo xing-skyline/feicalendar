@@ -1,0 +1,117 @@
+export type Provider = 'local' | 'feishu' | 'caldav' | 'ics';
+export type SyncState = 'local' | 'synced' | 'pending' | 'error' | 'conflict';
+
+export interface CalendarSource {
+  id: string;
+  name: string;
+  color: string;
+  provider: Provider;
+  visible: boolean;
+  writable: boolean;
+  remoteId?: string;
+  connectionId?: string;
+}
+
+export interface CalendarEvent {
+  id: string;
+  calendarId: string;
+  title: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  description: string;
+  location: string;
+  reminder: number;
+  recurrence: string;
+  completed: boolean;
+  syncState: SyncState;
+  remoteId?: string;
+  remoteFingerprint?: string;
+  recurring?: boolean;
+  seriesId?: string;
+  occurrenceStart?: string;
+  exceptions?: string[];
+  url?: string;
+  deleted?: boolean;
+  error?: string;
+}
+
+export interface Connection {
+  id: string;
+  kind: 'caldav' | 'ics';
+  name: string;
+  url: string;
+  username: string;
+  password?: string;
+  hasPassword?: boolean;
+  lastSync?: string;
+  error?: string;
+}
+
+export interface PendingChange {
+  id: string;
+  eventId: string;
+  action: 'create' | 'update' | 'delete';
+  baseFingerprint?: string;
+  status: 'pending' | 'error' | 'conflict';
+  error?: string;
+  remote?: CalendarEvent;
+}
+
+export interface Settings {
+  defaultCalendarId: string;
+  autoSync: boolean;
+  syncMinutes: number;
+  feishuEnabled: boolean;
+  reminders: boolean;
+  weekends: boolean;
+  theme: 'light' | 'dark' | 'system';
+}
+
+export interface AppSnapshot {
+  version: 1;
+  calendars: CalendarSource[];
+  events: CalendarEvent[];
+  connections: Connection[];
+  queue: PendingChange[];
+  settings: Settings;
+  lastSync?: string;
+  syncError?: string;
+}
+
+export interface AuthStatus {
+  available: boolean;
+  name?: string;
+  message: string;
+}
+
+export interface DateRange { start: string; end: string }
+export interface AuthChallenge { url: string; qr: string; deviceCode: string }
+export interface EventSave { event: CalendarEvent; scope?: 'single' | 'all' }
+
+export interface DesktopAPI {
+  snapshot(): Promise<AppSnapshot>;
+  saveEvent(input: EventSave): Promise<AppSnapshot>;
+  deleteEvent(id: string, scope?: 'single' | 'all'): Promise<AppSnapshot>;
+  saveCalendar(input: Partial<CalendarSource> & { name: string }): Promise<AppSnapshot>;
+  updateCalendar(id: string, patch: { visible?: boolean; color?: string; name?: string }): Promise<AppSnapshot>;
+  publishCalendar(id: string, targetId: string): Promise<AppSnapshot>;
+  settings(patch: Partial<Settings>): Promise<AppSnapshot>;
+  saveConnection(connection: Connection): Promise<AppSnapshot>;
+  removeConnection(id: string): Promise<AppSnapshot>;
+  authStatus(): Promise<AuthStatus>;
+  configureApp(appId: string, appSecret: string): Promise<void>;
+  authStart(): Promise<AuthChallenge>;
+  authFinish(code: string): Promise<AuthStatus>;
+  sync(range: DateRange): Promise<AppSnapshot>;
+  resolveConflict(id: string, choice: 'remote' | 'local'): Promise<AppSnapshot>;
+  exportCalendar(): Promise<string | null>;
+  openExternal(url: string): Promise<void>;
+  window(action: 'minimize' | 'maximize' | 'close'): void;
+  onChanged(callback: (snapshot: AppSnapshot) => void): () => void;
+  onSync(callback: (busy: boolean) => void): () => void;
+}
+
+declare global {
+  interface Window { calendar: DesktopAPI }
+}
