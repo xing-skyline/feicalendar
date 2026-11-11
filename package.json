@@ -1,7 +1,7 @@
 {
   "name": "feicalendar",
   "productName": "FeiCalendar",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "飞历 — 支持多来源同步与教学周的桌面日历",
   "author": "xing-skyline",
   "private": true,
@@ -16,6 +16,7 @@
     "dist": "npm run build && electron-builder --win portable --x64 && npm run test:icons",
     "test:desktop": "node scripts/smoke.mjs",
     "test:portable": "node scripts/portable-smoke.mjs",
+    "test:widget": "node scripts/widget-smoke.mjs",
     "licenses": "node scripts/generate-notices.mjs",
     "test:icons": "node scripts/check-icons.mjs"
   },
@@ -30,6 +31,7 @@
     "@fullcalendar/timegrid": "6.1.22",
     "date-fns": "^4.1.0",
     "ical.js": "^2.2.1",
+    "koffi": "3.3.7",
     "lucide-react": "^0.468.0",
     "luxon": "3.7.2",
     "node-ical": "0.27.6",

@@ -2,6 +2,24 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopAPI } from "../src/shared/types";
 
 const api: DesktopAPI = {
+  desktopRange: (range) => ipcRenderer.invoke("calendar:desktop-range", range),
+  desktop: (action) => ipcRenderer.invoke("calendar:desktop", action),
+  desktopStatus: () => ipcRenderer.invoke("calendar:desktop-status"),
+  navigate: (target) => ipcRenderer.invoke("calendar:navigate", target),
+  onNavigate: (callback) => {
+    const listener = (_: unknown, target: Parameters<typeof callback>[0]) =>
+      callback(target);
+    ipcRenderer.on("calendar:navigate", listener);
+    return () => ipcRenderer.removeListener("calendar:navigate", listener);
+  },
+  updateAction: (action) =>
+    ipcRenderer.invoke("calendar:update-action", action),
+  onUpdate: (callback) => {
+    const listener = (_: unknown, status: Parameters<typeof callback>[0]) =>
+      callback(status);
+    ipcRenderer.on("calendar:update", listener);
+    return () => ipcRenderer.removeListener("calendar:update", listener);
+  },
   snapshot: () => ipcRenderer.invoke("calendar:snapshot"),
   saveEvent: (input) => ipcRenderer.invoke("calendar:save-event", input),
   deleteEvent: (id, scope) =>

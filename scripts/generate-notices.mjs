@@ -3,7 +3,11 @@ import path from "node:path";
 
 const lock = JSON.parse(await readFile("package-lock.json", "utf8"));
 const dependencies = Object.entries(lock.packages).filter(
-  ([directory, info]) => directory && !info.dev,
+  ([directory, info]) =>
+    directory &&
+    !info.dev &&
+    (!info.os || info.os.includes(process.platform)) &&
+    (!info.cpu || info.cpu.includes(process.arch)),
 );
 for (const directory of [
   "node_modules/@larksuite/cli",
@@ -24,7 +28,10 @@ for (const [directory, info] of dependencies) {
   const manifest = JSON.parse(
     await readFile(path.join(directory, "package.json"), "utf8"),
   );
-  const files = (await readdir(directory)).filter((file) =>
+  const licenseDirectory = manifest.name.startsWith("@koromix/koffi-")
+    ? "node_modules/koffi"
+    : directory;
+  const files = (await readdir(licenseDirectory)).filter((file) =>
     /^(licen[sc]e|copying|notice|copyrightnotice)([._-]|$)/i.test(file),
   );
   if (!files.length) throw new Error(`Missing license text for ${directory}`);
@@ -33,7 +40,7 @@ for (const [directory, info] of dependencies) {
     `License identifier — ${info.license}`,
   );
   for (const file of files.sort()) {
-    const content = await readFile(path.join(directory, file), "utf8");
+    const content = await readFile(path.join(licenseDirectory, file), "utf8");
     sections.push(`### ${file}`, `\`\`\`text\n${content.trim()}\n\`\`\``);
   }
 }

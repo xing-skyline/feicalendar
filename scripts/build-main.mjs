@@ -8,6 +8,6 @@ await build({
   target: "node22",
   format: "cjs",
   outExtension: { ".js": ".cjs" },
-  external: ["electron", "node-ical", "tsdav"],
+  external: ["electron", "node-ical", "tsdav", "koffi"],
   sourcemap: true,
 });

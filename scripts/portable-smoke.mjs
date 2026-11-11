@@ -171,6 +171,31 @@ try {
   await checkCalendarViews(page, screenshots, "portable");
   await checkCalendarSettings(page, screenshots, "portable");
   await checkSyncConnections(page, screenshots, "portable");
+  await page.getByTitle("设置", { exact: true }).click();
+  await page.getByRole("button", { name: "桌面日历", exact: true }).click();
+  await page.getByLabel("开启桌面日历", { exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => window.calendar.desktopStatus()))
+    .toEqual({ mode: "embedded", visible: true });
+  const panel = browser
+    .contexts()[0]
+    .pages()
+    .find((item) => item.url().endsWith("#desktop"));
+  await expect(panel.locator(".desktop-panel")).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: /便携版独立运行验证/ }),
+  ).toBeVisible();
+  await panel.getByLabel("关闭桌面日历", { exact: true }).click();
+  await expect(
+    page.getByLabel("开启桌面日历", { exact: true }),
+  ).not.toBeChecked();
+  await page.getByRole("button", { name: "软件更新", exact: true }).click();
+  const update = await page.evaluate(() =>
+    window.calendar.updateAction("status"),
+  );
+  expect(update.currentVersion).toBe(version);
+  expect(update.canInstall).toBe(true);
+  await page.getByLabel("关闭设置").click();
   await page.getByTitle("最小化到托盘", { exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => document.visibilityState))

@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import DesktopPanel from "./components/DesktopPanel";
 import "./styles.css";
 
 class ErrorBoundary extends React.Component<
@@ -25,6 +26,6 @@ class ErrorBoundary extends React.Component<
 }
 createRoot(document.getElementById("root")!).render(
   <ErrorBoundary>
-    <App />
+    {location.hash === "#desktop" ? <DesktopPanel /> : <App />}
   </ErrorBoundary>,
 );

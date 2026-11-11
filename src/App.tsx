@@ -241,6 +241,22 @@ export default function App() {
     },
     [snapshot],
   );
+  useEffect(
+    () =>
+      window.calendar.onNavigate((target) => {
+        if (target.settings) {
+          setEditor(undefined);
+          setSettingsTab(target.settings);
+        } else if (target.event) {
+          setSettingsTab("");
+          setEditor(target.event);
+        } else if (target.date) {
+          setSettingsTab("");
+          newEvent(`${target.date}T09:00:00+08:00`);
+        }
+      }),
+    [newEvent],
+  );
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {

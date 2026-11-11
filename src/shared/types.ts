@@ -90,6 +90,13 @@ export interface Settings {
   theme: "light" | "dark" | "system";
   calendarView: CalendarView;
   closeToTray: boolean;
+  desktopEnabled: boolean;
+  desktopView: "month" | "agenda";
+  desktopTheme: "light" | "dark" | "system";
+  desktopColor: string;
+  desktopOpacity: number;
+  desktopLocked: boolean;
+  autoCheckUpdates: boolean;
   weekStartsOn: 0 | 1 | 6;
   hour12: boolean;
   dayStartHour: number;
@@ -132,6 +139,30 @@ export interface EventSave {
 }
 
 export interface DesktopAPI {
+  desktopRange(range: DateRange): Promise<void>;
+  desktop(
+    action: "show" | "hide" | "close" | "reset" | "move" | "resize" | "stop",
+  ): Promise<void>;
+  desktopStatus(): Promise<{
+    mode: "embedded" | "floating" | "off";
+    visible: boolean;
+  }>;
+  navigate(target: {
+    settings?: "desktop" | "updates";
+    event?: CalendarEvent;
+    date?: string;
+  }): Promise<void>;
+  onNavigate(
+    callback: (target: {
+      settings?: string;
+      event?: CalendarEvent;
+      date?: string;
+    }) => void,
+  ): () => void;
+  updateAction(
+    action: "status" | "check" | "download" | "install",
+  ): Promise<UpdateStatus>;
+  onUpdate(callback: (status: UpdateStatus) => void): () => void;
   snapshot(): Promise<AppSnapshot>;
   saveEvent(input: EventSave): Promise<AppSnapshot>;
   deleteEvent(id: string, scope?: "single" | "all"): Promise<AppSnapshot>;
@@ -161,6 +192,26 @@ export interface DesktopAPI {
   window(action: "minimize" | "maximize" | "close"): void;
   onChanged(callback: (snapshot: AppSnapshot) => void): () => void;
   onSync(callback: (busy: boolean) => void): () => void;
+}
+
+export interface UpdateStatus {
+  phase:
+    | "idle"
+    | "checking"
+    | "latest"
+    | "available"
+    | "downloading"
+    | "ready"
+    | "installing"
+    | "error";
+  currentVersion: string;
+  version?: string;
+  notes?: string;
+  url?: string;
+  checkedAt?: string;
+  progress?: number;
+  error?: string;
+  canInstall: boolean;
 }
 
 declare global {

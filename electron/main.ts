@@ -18,6 +18,8 @@ import { Store } from "./store";
 import { FeishuClient } from "./feishu";
 import { CredentialVault } from "./vault";
 import { CalendarService } from "./service";
+import { DesktopPanel } from "./desktop";
+import { PortableUpdater } from "./updater";
 import { exportICS } from "./subscriptions";
 import { expandLocalEvents } from "../src/shared/recurrence";
 import type { CalendarEvent, Connection, DateRange } from "../src/shared/types";
@@ -100,6 +102,37 @@ async function main() {
   const directory = app.getPath("userData");
   const store = new Store(directory);
   await store.load();
+  let refreshTray = () => {};
+  let desktopRange: DateRange | undefined;
+  const desktop = new DesktopPanel(directory, () => {
+    if (!desktop.window) desktopRange = undefined;
+    refreshTray();
+  });
+  const updater = new PortableUpdater({
+    directory,
+    version: app.getVersion(),
+    executable: app.isPackaged
+      ? process.env.PORTABLE_EXECUTABLE_FILE
+      : undefined,
+    changed: (status) => {
+      window?.webContents.send("calendar:update", status);
+      refreshTray();
+    },
+  });
+  const broadcast = (channel: string, value: unknown) => {
+    for (const target of [window, desktop.window])
+      if (target && !target.isDestroyed())
+        target.webContents.send(channel, value);
+  };
+  const navigate = (target: {
+    settings?: string;
+    event?: CalendarEvent;
+    date?: string;
+  }) => {
+    showWindow();
+    window?.webContents.send("calendar:navigate", target);
+  };
+  app.once("will-quit", () => desktop.dispose());
   const binary = app.isPackaged
     ? path.join(process.resourcesPath, "lark-cli", "bin", "lark-cli.exe")
     : path.join(
@@ -116,7 +149,9 @@ async function main() {
     feishu,
     new CredentialVault(directory),
     (snapshot) => {
-      window?.webContents.send("calendar:changed", snapshot);
+      broadcast("calendar:changed", snapshot);
+      void desktop.apply(snapshot.settings).catch(() => {});
+      refreshTray();
     },
   );
   let range: DateRange = {
@@ -124,14 +159,15 @@ async function main() {
     end: new Date(Date.now() + 60 * 86400_000).toISOString(),
   };
   let syncing: Promise<unknown> | null = null;
-  const sync = (requested: DateRange) => {
-    range = requested;
+  let installing = false;
+  const sync = (requested: DateRange, remember = true) => {
+    if (remember) range = requested;
     const task = service.exclusive(async () => {
-      window?.webContents.send("calendar:syncing", true);
+      broadcast("calendar:syncing", true);
       try {
         return await service.sync(requested);
       } finally {
-        window?.webContents.send("calendar:syncing", false);
+        broadcast("calendar:syncing", false);
       }
     });
     syncing = task;
@@ -203,6 +239,16 @@ async function main() {
               theme: z.enum(["light", "dark", "system"]).optional(),
               calendarView: z.enum(CALENDAR_VIEWS).optional(),
               closeToTray: z.boolean().optional(),
+              desktopEnabled: z.boolean().optional(),
+              desktopView: z.enum(["month", "agenda"]).optional(),
+              desktopTheme: z.enum(["light", "dark", "system"]).optional(),
+              desktopColor: z
+                .string()
+                .regex(/^#[0-9a-fA-F]{6}$/)
+                .optional(),
+              desktopOpacity: z.number().int().min(0).max(100).optional(),
+              desktopLocked: z.boolean().optional(),
+              autoCheckUpdates: z.boolean().optional(),
               weekStartsOn: z
                 .union([z.literal(0), z.literal(1), z.literal(6)])
                 .optional(),
@@ -334,15 +380,117 @@ async function main() {
       if (url.protocol !== "https:") throw new Error("仅支持打开 HTTPS 链接");
       await shell.openExternal(url.href);
     },
+    "desktop-status": () => desktop.status,
+    "desktop-range": async (input) => {
+      desktopRange = rangeSchema.parse(input);
+      if (
+        store.state.settings.autoSync &&
+        (store.state.settings.feishuEnabled ||
+          store.state.connections.some((item) => item.enabled !== false))
+      )
+        await sync(desktopRange, false);
+    },
+    desktop: async (input) => {
+      const action = z
+        .enum(["show", "hide", "close", "reset", "move", "resize", "stop"])
+        .parse(input);
+      if (action === "show") {
+        await service.exclusive(() =>
+          service.settings({ desktopEnabled: true }),
+        );
+        await desktop.show();
+      }
+      if (action === "hide") desktop.hide();
+      if (action === "close")
+        await service.exclusive(() =>
+          service.settings({ desktopEnabled: false }),
+        );
+      if (action === "reset") desktop.reset();
+      if (action === "move" || action === "resize")
+        desktop.move(action === "resize");
+      if (action === "stop") desktop.stopMovement();
+    },
+    navigate: (input) => {
+      const target = z
+        .object({
+          settings: z.enum(["desktop", "updates"]).optional(),
+          event: z.unknown().optional(),
+          date: z.iso.date().optional(),
+        })
+        .parse(input);
+      // The panel can open existing instances, including external RRULEs. It
+      // cannot mutate them through navigation; the editor's normal validation applies.
+      let event: CalendarEvent | undefined;
+      if (target.event && typeof target.event === "object") {
+        const reference = target.event as CalendarEvent;
+        const original = store.state.events.find(
+          (item) =>
+            item.id === (reference.seriesId || reference.id) && !item.deleted,
+        );
+        if (original) {
+          event = original;
+          if (reference.occurrenceStart && original.recurrence) {
+            const start = date.parse(reference.occurrenceStart);
+            event = expandLocalEvents([original], {
+              start,
+              end: new Date(
+                new Date(start).getTime() + 86400_000,
+              ).toISOString(),
+            }).find((item) => item.id === reference.id);
+          }
+        }
+      }
+      navigate({ settings: target.settings, event, date: target.date });
+    },
+    "update-action": async (input) => {
+      const action = z
+        .enum(["status", "check", "download", "install"])
+        .parse(input);
+      if (action === "check") return updater.check();
+      if (action === "download") return updater.download();
+      if (action === "install") {
+        if (installing) throw new Error("正在准备升级");
+        installing = true;
+        try {
+          const launch = await updater.prepareInstall();
+          quitting = true;
+          await service.exclusive(async () => {});
+          await launch();
+          app.quit();
+        } catch (error) {
+          quitting = false;
+          installing = false;
+          throw error;
+        }
+      }
+      return updater.status;
+    },
   };
   for (const [name, handler] of Object.entries(handlers)) {
     ipcMain.handle(`calendar:${name}`, async (event, ...args) => {
       if (quitting) throw new Error("飞历正在退出");
+      const source = [window, desktop.window].find(
+        (target) => target?.webContents === event.sender,
+      );
+      const widgetAllowed = [
+        "snapshot",
+        "settings",
+        "desktop",
+        "desktop-status",
+        "desktop-range",
+        "navigate",
+      ];
       if (
-        event.sender !== window?.webContents ||
-        event.senderFrame !== window.webContents.mainFrame
+        !source ||
+        event.senderFrame !== source.webContents.mainFrame ||
+        (source === desktop.window && !widgetAllowed.includes(name))
       )
         throw new Error("无效的调用来源");
+      if (source === desktop.window && name === "settings") {
+        args[0] = z
+          .object({ desktopView: z.enum(["month", "agenda"]).optional() })
+          .parse(args[0]);
+      }
       try {
         return await handler(...args);
       } catch (error) {
@@ -469,6 +617,9 @@ async function main() {
     if (!quitting && store.state.settings.closeToTray && tray) {
       event.preventDefault();
       window?.hide();
+    } else if (!quitting) {
+      event.preventDefault();
+      void exitApp();
     }
   });
   window.on("query-session-end", () => {
@@ -495,6 +646,7 @@ async function main() {
   let elapsed = 0;
   const notified = new Set<string>();
   const timer = setInterval(() => {
+    if (quitting) return;
     elapsed += 15;
     if (
       store.state.settings.autoSync &&
@@ -502,7 +654,32 @@ async function main() {
       !syncing
     ) {
       elapsed = 0;
-      void sync(range).catch(() => {});
+      const ranges = [range];
+      if (desktopRange) {
+        const start = new Date(
+          Math.min(
+            new Date(range.start).getTime(),
+            new Date(desktopRange.start).getTime(),
+          ),
+        ).toISOString();
+        const end = new Date(
+          Math.max(
+            new Date(range.end).getTime(),
+            new Date(desktopRange.end).getTime(),
+          ),
+        ).toISOString();
+        if (
+          new Date(end).getTime() - new Date(start).getTime() <=
+          400 * 86400_000
+        )
+          ranges[0] = { start, end };
+        else ranges.push(desktopRange);
+      }
+      void (async () => {
+        for (const requested of ranges) {
+          if (!quitting) await sync(requested, false);
+        }
+      })().catch(() => {});
     }
     if (!store.state.settings.reminders || !notificationsSupported) return;
     const now = Date.now();
@@ -527,25 +704,118 @@ async function main() {
   }, 15_000);
   tray = new Tray(shellIcon);
   tray.setToolTip("飞历 FeiCalendar");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "打开飞历", click: showWindow },
-      { type: "separator" },
-      {
-        label: "退出飞历",
-        click: async () => {
-          if (quitting) return;
-          quitting = true;
-          clearInterval(timer);
-          tray?.setToolTip("飞历正在退出…");
-          window?.hide();
-          // Finish queued saves and sync operations before releasing the profile.
-          await service.exclusive(async () => {});
-          app.quit();
+  const exitApp = async () => {
+    if (quitting) return;
+    quitting = true;
+    clearInterval(timer);
+    clearInterval(updateTimer);
+    tray?.setToolTip("飞历正在退出…");
+    window?.hide();
+    desktop.hide();
+    await service.exclusive(async () => {});
+    app.quit();
+  };
+  refreshTray = () =>
+    tray?.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: "打开飞历", click: showWindow },
+        { type: "separator" },
+        {
+          label: "开启桌面日历",
+          type: "checkbox",
+          checked: store.state.settings.desktopEnabled,
+          click: (item) => {
+            void service
+              .exclusive(() =>
+                service.settings({ desktopEnabled: item.checked }),
+              )
+              .catch(() => {});
+          },
         },
-      },
-    ]),
-  );
+        {
+          label: desktop.status.visible ? "暂时隐藏桌面日历" : "显示桌面日历",
+          enabled: store.state.settings.desktopEnabled,
+          click: () => {
+            if (desktop.status.visible) desktop.hide();
+            else void desktop.show();
+          },
+        },
+        {
+          label: "桌面日历外观…",
+          click: () => navigate({ settings: "desktop" }),
+        },
+        {
+          label: "锁定桌面日历位置",
+          type: "checkbox",
+          checked: store.state.settings.desktopLocked,
+          enabled: store.state.settings.desktopEnabled,
+          click: (item) => {
+            void service
+              .exclusive(() =>
+                service.settings({ desktopLocked: item.checked }),
+              )
+              .catch(() => {});
+          },
+        },
+        {
+          label: "重置桌面日历位置",
+          enabled: store.state.settings.desktopEnabled,
+          click: () => {
+            desktop.reset();
+            void desktop.show();
+          },
+        },
+        {
+          label: "关闭桌面日历",
+          enabled: store.state.settings.desktopEnabled,
+          click: () => {
+            void service
+              .exclusive(() => service.settings({ desktopEnabled: false }))
+              .catch(() => {});
+          },
+        },
+        { type: "separator" },
+        {
+          label:
+            updater.status.phase === "ready"
+              ? "新版已下载，查看升级…"
+              : updater.status.phase === "available"
+                ? `发现新版 ${updater.status.version}…`
+                : "检查更新…",
+          click: () => {
+            navigate({ settings: "updates" });
+            void updater.check();
+          },
+        },
+        { type: "separator" },
+        {
+          label: "退出飞历",
+          click: () => {
+            void exitApp();
+          },
+        },
+      ]),
+    );
+  refreshTray();
+  await desktop.apply(store.state.settings);
+  await updater.restoreResult();
+  let lastCheck = Date.now();
+  const autoCheck = () => {
+    if (app.isPackaged && store.state.settings.autoCheckUpdates)
+      void updater.check();
+  };
+  const initialCheck = setTimeout(autoCheck, 15_000);
+  const updateTimer = setInterval(() => {
+    if (Date.now() - lastCheck >= 24 * 3600_000) {
+      lastCheck = Date.now();
+      autoCheck();
+    }
+  }, 60_000);
+  app.once("will-quit", () => {
+    clearTimeout(initialCheck);
+    clearInterval(updateTimer);
+    clearInterval(timer);
+  });
   tray.on("click", showWindow);
   tray.on("double-click", showWindow);
   window.on("closed", () => {

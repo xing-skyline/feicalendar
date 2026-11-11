@@ -22,6 +22,8 @@ import type {
   Connection,
 } from "../shared/types";
 import { hourTime } from "../shared/dates";
+import DesktopSettings from "./DesktopSettings";
+import UpdateSettings from "./UpdateSettings";
 
 const connectionPresets = [
   { name: "通用 CalDAV", kind: "caldav", url: "", readOnly: false },
@@ -63,6 +65,7 @@ export default function SettingsDialog({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState(initialTab);
+  useEffect(() => setTab(initialTab), [initialTab]);
   const [auth, setAuth] = useState<AuthStatus>();
   const [challenge, setChallenge] = useState<AuthChallenge>();
   const [connection, setConnection] = useState<Connection>();
@@ -171,9 +174,35 @@ export default function SettingsDialog({
               <GraduationCap size={17} />
               教学周
             </button>
+            <button
+              className={tab === "desktop" ? "active" : ""}
+              onClick={() => setTab("desktop")}
+            >
+              <CalendarDays size={17} />
+              桌面日历
+            </button>
+            <button
+              className={tab === "updates" ? "active" : ""}
+              onClick={() => setTab("updates")}
+            >
+              <Download size={17} />
+              软件更新
+            </button>
             <div className="settings-version">FeiCalendar {version}</div>
           </nav>
           <div className="settings-content">
+            {tab === "desktop" && (
+              <DesktopSettings
+                settings={snapshot.settings}
+                configure={configure}
+              />
+            )}
+            {tab === "updates" && (
+              <UpdateSettings
+                settings={snapshot.settings}
+                configure={configure}
+              />
+            )}
             {tab === "connections" && (
               <>
                 <h3>让日程保持同步</h3>
