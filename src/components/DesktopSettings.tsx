@@ -1,17 +1,23 @@
 import { useEffect, useState } from "react";
-import type { Settings } from "../shared/types";
+import type { Settings, CalendarSource } from "../shared/types";
 
 export default function DesktopSettings({
   settings,
   configure,
+  calendars,
 }: {
   settings: Settings;
   configure: (patch: Partial<Settings>) => Promise<void>;
+  calendars: CalendarSource[];
 }) {
   const [status, setStatus] =
     useState<Awaited<ReturnType<typeof window.calendar.desktopStatus>>>();
   const [opacity, setOpacity] = useState(settings.desktopOpacity);
   const [color, setColor] = useState(settings.desktopColor);
+  const [displays, setDisplays] = useState<{ id: string; label: string }[]>([]);
+  useEffect(() => {
+    void window.calendar.displays().then(setDisplays);
+  }, []);
   useEffect(
     () => setOpacity(settings.desktopOpacity),
     [settings.desktopOpacity],
@@ -50,7 +56,9 @@ export default function DesktopSettings({
           {status?.mode === "embedded"
             ? "已嵌入 Windows 桌面"
             : status?.mode === "floating"
-              ? "当前桌面环境使用独立面板，系统桌面恢复后会重新尝试嵌入"
+              ? settings.desktopMode === "embedded"
+                ? "当前桌面环境使用独立面板，系统桌面恢复后会重新尝试嵌入"
+                : "当前使用浮动面板"
               : "正在打开桌面日历…"}
           {status?.mode !== "off" && !status?.visible ? " · 已暂时隐藏" : ""}
         </p>
@@ -70,8 +78,119 @@ export default function DesktopSettings({
         >
           <option value="month">月历与当日日程</option>
           <option value="agenda">未来两周日程清单</option>
+          <option value="grid">大月历，日期格内显示日程</option>
         </select>
       </label>
+      <label className="setting-row">
+        <b>窗口模式</b>
+        <select
+          aria-label="桌面窗口模式"
+          value={settings.desktopMode}
+          onChange={(event) =>
+            void configure({
+              desktopMode: event.target.value as Settings["desktopMode"],
+            })
+          }
+        >
+          <option value="embedded">嵌入桌面</option>
+          <option value="floating">普通浮窗</option>
+          <option value="topmost">始终置顶浮窗</option>
+        </select>
+      </label>
+      <label className="setting-row">
+        <b>显示器</b>
+        <select
+          aria-label="桌面显示器"
+          value={settings.desktopDisplay}
+          onChange={(event) =>
+            void configure({ desktopDisplay: event.target.value })
+          }
+        >
+          <option value="">主显示器</option>
+          {displays.map((display) => (
+            <option key={display.id} value={display.id}>
+              {display.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="setting-row">
+        <b>桌面字号</b>
+        <input
+          aria-label="桌面字号"
+          type="number"
+          min={11}
+          max={22}
+          value={settings.desktopFontSize}
+          onChange={(event) =>
+            void configure({ desktopFontSize: Number(event.target.value) })
+          }
+        />
+      </label>
+      <label className="setting-row">
+        <b>日程行间距</b>
+        <input
+          aria-label="日程行间距"
+          type="number"
+          min={2}
+          max={18}
+          value={settings.desktopRowGap}
+          onChange={(event) =>
+            void configure({ desktopRowGap: Number(event.target.value) })
+          }
+        />
+      </label>
+      <label className="setting-row">
+        <b>大月历每格日程数</b>
+        <input
+          aria-label="每格日程数"
+          type="number"
+          min={1}
+          max={12}
+          value={settings.desktopMaxEvents}
+          onChange={(event) =>
+            void configure({ desktopMaxEvents: Number(event.target.value) })
+          }
+        />
+      </label>
+      <details>
+        <summary>桌面显示的日历</summary>
+        <label className="setting-row">
+          <span>跟随主窗口</span>
+          <input
+            type="checkbox"
+            checked={settings.desktopCalendarIds === null}
+            onChange={(event) =>
+              void configure({
+                desktopCalendarIds: event.target.checked
+                  ? null
+                  : calendars
+                      .filter((item) => item.visible)
+                      .map((item) => item.id),
+              })
+            }
+          />
+        </label>
+        {settings.desktopCalendarIds !== null &&
+          calendars.map((calendar) => (
+            <label className="setting-row" key={calendar.id}>
+              <span>{calendar.name}</span>
+              <input
+                type="checkbox"
+                checked={settings.desktopCalendarIds!.includes(calendar.id)}
+                onChange={(event) =>
+                  void configure({
+                    desktopCalendarIds: event.target.checked
+                      ? [...settings.desktopCalendarIds!, calendar.id]
+                      : settings.desktopCalendarIds!.filter(
+                          (id) => id !== calendar.id,
+                        ),
+                  })
+                }
+              />
+            </label>
+          ))}
+      </details>
       <label className="setting-row">
         <div>
           <b>深浅主题</b>

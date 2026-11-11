@@ -7,10 +7,12 @@ import {
   shell,
   Menu,
   Tray,
+  globalShortcut,
+  screen,
 } from "electron";
 import path from "node:path";
 import { existsSync, watch } from "node:fs";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import QRCode from "qrcode";
@@ -20,10 +22,23 @@ import { CredentialVault } from "./vault";
 import { CalendarService } from "./service";
 import { DesktopPanel } from "./desktop";
 import { PortableUpdater } from "./updater";
+import { Backups, encryptBackup, decryptBackup } from "./backups";
 import { exportICS } from "./subscriptions";
 import { expandLocalEvents } from "../src/shared/recurrence";
 import type { CalendarEvent, Connection, DateRange } from "../src/shared/types";
-import { CALENDAR_VIEWS } from "../src/shared/types";
+import {
+  text,
+  id,
+  date,
+  eventSchema,
+  rangeSchema,
+  scopeSchema,
+  settingsSchema,
+} from "./validation";
+import { specialEvents } from "../src/shared/almanac";
+import { CalendarImports } from "./imports";
+import { calendarPrintHtml } from "../src/shared/print";
+import { OAuthAuthorization } from "./oauth";
 
 app.setName("FeiCalendar");
 app.setAppUserModelId("cn.xingskyline.feicalendar");
@@ -48,60 +63,77 @@ app.on("will-quit", () => {
   tray = null;
 });
 
-const text = z.string().max(20_000);
-const id = z.string().min(1).max(3000);
-const date = z
-  .string()
-  .max(40)
-  .refine(
-    (value) => Number.isFinite(new Date(value).getTime()),
-    "时间格式无效",
-  );
-const eventSchema = z
-  .object({
-    id: z.string().max(3000),
-    calendarId: id,
-    title: z.string().trim().min(1).max(1000),
-    start: date,
-    end: date,
-    allDay: z.boolean(),
-    description: text,
-    location: z.string().max(2000),
-    reminder: z.number().int().min(-1).max(20160),
-    recurrence: z.enum([
-      "",
-      "FREQ=DAILY",
-      "FREQ=WEEKLY",
-      "FREQ=MONTHLY",
-      "FREQ=YEARLY",
-      "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
-    ]),
-    completed: z.boolean(),
-    syncState: z.enum(["local", "synced", "pending", "error", "conflict"]),
-    remoteId: id.optional(),
-    remoteFingerprint: text.optional(),
-    remoteEtag: text.optional(),
-    recurring: z.boolean().optional(),
-    seriesId: id.optional(),
-    occurrenceStart: date.optional(),
-    exceptions: z.array(date).max(5000).optional(),
-    url: text.optional(),
-  })
-  .refine(
-    (event) => new Date(event.end) > new Date(event.start),
-    "结束时间必须晚于开始时间",
-  );
-const rangeSchema = z.object({ start: date, end: date }).refine((value) => {
-  const duration =
-    new Date(value.end).getTime() - new Date(value.start).getTime();
-  return duration > 0 && duration <= 400 * 86400_000;
-}, "同步范围应在 400 天以内");
-const scopeSchema = z.enum(["single", "all"]).optional();
-
 async function main() {
   const directory = app.getPath("userData");
   const store = new Store(directory);
   await store.load();
+  const backups = new Backups(directory);
+  const imports = new CalendarImports();
+  const oauth = new OAuthAuthorization();
+  app.once("will-quit", () => oauth.cancel());
+  let capture: BrowserWindow | null = null;
+  const showCapture = async () => {
+    if (!capture || capture.isDestroyed()) {
+      capture = new BrowserWindow({
+        width: 660,
+        height: 660,
+        minWidth: 540,
+        minHeight: 540,
+        show: false,
+        frame: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        backgroundColor: "#f8f9fd",
+        webPreferences: {
+          preload: path.join(__dirname, "preload.cjs"),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+        },
+      });
+      capture.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      capture.webContents.on("will-navigate", (event) =>
+        event.preventDefault(),
+      );
+      capture.on("close", (event) => {
+        if (!quitting) {
+          event.preventDefault();
+          capture?.hide();
+        }
+      });
+      capture.on("closed", () => {
+        capture = null;
+      });
+      if (
+        !app.isPackaged &&
+        process.env.FEICALENDAR_DEV_URL === "http://127.0.0.1:5179"
+      )
+        await capture.loadURL(`${process.env.FEICALENDAR_DEV_URL}#capture`);
+      else
+        await capture.loadFile(path.join(__dirname, "../dist/index.html"), {
+          hash: "capture",
+        });
+    }
+    capture.show();
+    capture.focus();
+  };
+  let registeredShortcut = "";
+  const configureShortcut = (shortcut: string) => {
+    if (shortcut === registeredShortcut) return;
+    if (
+      shortcut &&
+      !globalShortcut.register(shortcut, () => {
+        void showCapture();
+      })
+    )
+      throw new Error("快捷键被其他应用占用，请更换组合");
+    if (registeredShortcut) globalShortcut.unregister(registeredShortcut);
+    registeredShortcut = shortcut;
+  };
+  app.once("will-quit", () => {
+    globalShortcut.unregisterAll();
+    capture?.destroy();
+  });
   let refreshTray = () => {};
   let desktopRange: DateRange | undefined;
   const desktop = new DesktopPanel(directory, () => {
@@ -120,7 +152,7 @@ async function main() {
     },
   });
   const broadcast = (channel: string, value: unknown) => {
-    for (const target of [window, desktop.window])
+    for (const target of [window, desktop.window, capture])
       if (target && !target.isDestroyed())
         target.webContents.send(channel, value);
   };
@@ -144,16 +176,12 @@ async function main() {
         "lark-cli.exe",
       );
   const feishu = new FeishuClient(binary);
-  const service = new CalendarService(
-    store,
-    feishu,
-    new CredentialVault(directory),
-    (snapshot) => {
-      broadcast("calendar:changed", snapshot);
-      void desktop.apply(snapshot.settings).catch(() => {});
-      refreshTray();
-    },
-  );
+  const vault = new CredentialVault(directory);
+  const service = new CalendarService(store, feishu, vault, (snapshot) => {
+    broadcast("calendar:changed", snapshot);
+    void desktop.apply(snapshot.settings).catch(() => {});
+    refreshTray();
+  });
   let range: DateRange = {
     start: new Date(Date.now() - 30 * 86400_000).toISOString(),
     end: new Date(Date.now() + 60 * 86400_000).toISOString(),
@@ -180,10 +208,446 @@ async function main() {
   };
 
   const handlers: Record<string, (...args: unknown[]) => unknown> = {
+    "oauth-connect": async (value) => {
+      const input = z
+        .object({
+          id: z.string().max(100),
+          name: z.string().trim().min(1).max(100),
+          kind: z.enum(["google", "microsoft"]),
+          clientId: z.string().trim().min(1).max(500),
+          clientSecret: z.string().max(1000),
+          tenant: z.string().trim().min(1).max(200),
+        })
+        .parse(value);
+      if (input.id) {
+        const previous = await vault.read(input.id);
+        if (previous?.kind !== input.kind || !previous.oauth)
+          throw new Error("原连接已不存在，请新增账号连接");
+        if (!input.clientSecret && previous.oauth.clientId === input.clientId)
+          input.clientSecret = previous.oauth.clientSecret || "";
+      }
+      const connection = await oauth.connect(input, (url) =>
+        shell.openExternal(url),
+      );
+      return service.exclusive(() =>
+        service.saveOAuthConnection(connection, Boolean(input.id)),
+      );
+    },
+    "oauth-cancel": () => oauth.cancel(),
+    "save-semester": (value, activate) =>
+      service.exclusive(() =>
+        service.saveSemester(
+          z
+            .object({
+              id: z.string().max(100),
+              name: z.string().trim().min(1).max(100),
+              startDate: z.iso.date(),
+              weeks: z.number().int().min(1).max(60),
+              weekStartsOn: z.union([z.literal(0), z.literal(1), z.literal(6)]),
+              periods: z
+                .array(
+                  z.object({
+                    id,
+                    name: z.string().trim().min(1).max(30),
+                    start: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+                    end: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+                  }),
+                )
+                .min(1)
+                .max(30),
+            })
+            .parse(value),
+          z.boolean().parse(activate),
+        ),
+      ),
+    "delete-semester": (value) =>
+      service.exclusive(() => service.deleteSemester(id.parse(value))),
+    "save-course": (value) =>
+      service.exclusive(() =>
+        service.saveCourse(
+          z
+            .object({
+              id: z.string().max(100),
+              semesterId: id,
+              title: z.string().trim().min(1).max(1000),
+              calendarId: id,
+              weekday: z.number().int().min(0).max(6),
+              weeks: z.array(z.number().int().min(1).max(60)).min(1).max(60),
+              firstPeriod: id,
+              lastPeriod: id,
+              location: z.string().max(2000),
+              description: text,
+              exceptions: z.record(
+                z.string().regex(/^\d{1,2}$/),
+                z.object({
+                  cancelled: z.boolean().optional(),
+                  start: date.optional(),
+                  end: date.optional(),
+                  title: z.string().min(1).max(1000).optional(),
+                  location: z.string().max(2000).optional(),
+                  description: text.optional(),
+                }),
+              ),
+            })
+            .parse(value),
+        ),
+      ),
+    "delete-course": (value) =>
+      service.exclusive(() => service.deleteCourse(id.parse(value))),
+    "bulk-events": (input) =>
+      service.exclusive(() =>
+        service.bulkEvents(
+          z
+            .object({
+              operationId: z.uuid(),
+              ids: z.array(id).min(1).max(2000),
+              action: z.enum([
+                "copy",
+                "move",
+                "reminder",
+                "complete",
+                "delete",
+              ]),
+              calendarId: id,
+              reminder: z.number().int().min(-1).max(20160),
+            })
+            .parse(input),
+        ),
+      ),
+    "import-preview": async (value, requested) => {
+      const calendarId = id.parse(value);
+      const selectedRange = rangeSchema.parse(requested);
+      const selection = await dialog.showOpenDialog(window!, {
+        filters: [{ name: "iCalendar 日历", extensions: ["ics"] }],
+        properties: ["openFile"],
+      });
+      const file = selection.filePaths[0];
+      if (selection.canceled || !file) return null;
+      if ((await stat(file)).size > 20_000_000)
+        throw new Error("ICS 文件超过 20 MB");
+      const content = await readFile(file, "utf8");
+      return service.exclusive(() =>
+        imports.preview(content, calendarId, selectedRange, store.state),
+      );
+    },
+    "import-apply": (token, values) =>
+      service.exclusive(() => {
+        const events = imports.selected(
+          id.parse(token),
+          z.array(id).max(10000).parse(values),
+          store.state,
+        );
+        return service.saveEvents(events.map((event) => ({ event })));
+      }),
+    print: async (input, pdf) => {
+      const options = z
+        .object({
+          date: z.iso.date(),
+          view: z.enum(["week", "month", "course"]),
+          calendarIds: z.array(id).min(1).max(1000),
+          details: z.boolean(),
+        })
+        .parse(input);
+      const savePdf = z.boolean().parse(pdf);
+      let destination: string | undefined;
+      if (savePdf) {
+        const result = await dialog.showSaveDialog(window!, {
+          defaultPath: `飞历-${options.date}.pdf`,
+          filters: [{ name: "PDF", extensions: ["pdf"] }],
+        });
+        if (result.canceled || !result.filePath) return null;
+        destination = result.filePath;
+      }
+      const html = calendarPrintHtml(store.state, options);
+      const printWindow = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+          javascript: false,
+        },
+      });
+      printWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      try {
+        await printWindow.loadURL(
+          `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+        );
+        if (destination) {
+          await writeFile(
+            destination,
+            await printWindow.webContents.printToPDF({
+              pageSize: "A4",
+              landscape: true,
+              printBackground: true,
+              preferCSSPageSize: true,
+            }),
+          );
+          return destination;
+        }
+        await new Promise<void>((resolve, reject) =>
+          printWindow.webContents.print(
+            {
+              silent: false,
+              printBackground: true,
+              landscape: true,
+              pageSize: "A4",
+            },
+            (success, reason) =>
+              success ? resolve() : reject(new Error(reason || "打印已取消")),
+          ),
+        );
+        return "已发送打印任务";
+      } finally {
+        printWindow.destroy();
+      }
+    },
+    "save-task": (input) =>
+      service.exclusive(() =>
+        service.saveTask(
+          z
+            .object({
+              id: z.string().max(100),
+              title: z.string().trim().min(1).max(1000),
+              description: text,
+              deadline: z.union([z.literal(""), date]),
+              estimateMinutes: z.number().int().min(1).max(10080),
+              priority: z.number().int().min(0).max(3),
+              completed: z.boolean(),
+              subtasks: z
+                .array(
+                  z.object({
+                    id: z.string().max(100),
+                    title: z.string().trim().min(1).max(1000),
+                    completed: z.boolean(),
+                  }),
+                )
+                .max(200),
+            })
+            .parse(input),
+        ),
+      ),
+    "delete-task": (value, removeScheduled) =>
+      service.exclusive(() =>
+        service.deleteTask(id.parse(value), z.boolean().parse(removeScheduled)),
+      ),
+    "schedule-task": (value, start, calendarId, blockId) =>
+      service.exclusive(() =>
+        service.scheduleTask(
+          id.parse(value),
+          date.parse(start),
+          id.parse(calendarId),
+          z.uuid().parse(blockId),
+        ),
+      ),
+    "save-calendar-set": (input) =>
+      service.exclusive(() =>
+        service.saveCalendarSet(
+          z
+            .object({
+              id: z.string().max(100),
+              name: z.string().trim().min(1).max(100),
+              calendarIds: z.array(id).max(1000),
+            })
+            .parse(input),
+        ),
+      ),
+    "delete-calendar-set": (value) =>
+      service.exclusive(() => service.deleteCalendarSet(id.parse(value))),
+    "apply-calendar-set": (value, desktop) =>
+      service.exclusive(() =>
+        service.applyCalendarSet(id.parse(value), z.boolean().parse(desktop)),
+      ),
+    "save-events": (inputs) =>
+      service.exclusive(() =>
+        service.saveEvents(
+          z
+            .array(z.object({ event: eventSchema, scope: scopeSchema }))
+            .min(1)
+            .max(2000)
+            .parse(inputs),
+        ),
+      ),
+    "update-holidays": async () => {
+      const response = await fetch(
+        "https://raw.githubusercontent.com/xing-skyline/feicalendar/main/data/holidays.json",
+        { signal: AbortSignal.timeout(20_000) },
+      );
+      if (!response.ok)
+        throw new Error(`节假日数据请求失败（${response.status}）`);
+      const content = await response.text();
+      if (content.length > 500_000) throw new Error("节假日数据超出限制");
+      const data = z
+        .object({
+          version: z.literal(1),
+          years: z.record(
+            z.string().regex(/^\d{4}$/),
+            z.object({
+              source: z
+                .url()
+                .refine(
+                  (value) =>
+                    new URL(value).protocol === "https:" &&
+                    new URL(value).hostname.endsWith(".gov.cn"),
+                ),
+              publishedAt: z.iso.date(),
+              holidays: z
+                .array(
+                  z.object({
+                    name: z.string().max(50),
+                    start: z.iso.date(),
+                    end: z.iso.date(),
+                  }),
+                )
+                .max(100),
+              workdays: z.array(z.iso.date()).max(366),
+            }),
+          ),
+        })
+        .parse(JSON.parse(content));
+      return service.exclusive(() => service.saveHolidayData(data));
+    },
+    "holiday-override": (day, value) =>
+      service.exclusive(() =>
+        service.holidayOverride(
+          z.iso.date().parse(day),
+          z
+            .object({
+              name: z.string().trim().min(1).max(100),
+              work: z.boolean(),
+            })
+            .nullable()
+            .parse(value),
+        ),
+      ),
+    "save-special-date": (value) =>
+      service.exclusive(() =>
+        service.saveSpecialDate(
+          z
+            .object({
+              id: z.string().max(100),
+              title: z.string().trim().min(1).max(100),
+              date: z
+                .string()
+                .regex(/^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/),
+              lunar: z.boolean(),
+              leapMonth: z.boolean(),
+              yearly: z.boolean(),
+              showDesktop: z.boolean(),
+              remindDays: z.number().int().min(-1).max(14),
+            })
+            .parse(value),
+        ),
+      ),
+    "delete-special-date": (value) =>
+      service.exclusive(() => service.deleteSpecialDate(id.parse(value))),
+    "backup-list": () => backups.list(),
+    "backup-preview": (value, options) =>
+      service.exclusive(() =>
+        backups.preview(
+          store.state,
+          id.parse(value),
+          z
+            .object({ includeCloud: z.boolean(), deleteMissing: z.boolean() })
+            .parse(options),
+        ),
+      ),
+    "backup-restore": (token) =>
+      service.exclusive(() =>
+        service.restoreBackup(backups.take(id.parse(token), store.state)),
+      ),
+    "backup-export": async (input) => {
+      const password = z.string().min(8).max(1024).parse(input);
+      const destination = await dialog.showSaveDialog(window!, {
+        defaultPath: "飞历加密备份.fcbackup",
+        filters: [{ name: "飞历加密备份", extensions: ["fcbackup"] }],
+      });
+      if (!destination.filePath || destination.canceled) return null;
+      const data = await service.exclusive(() =>
+        encryptBackup(structuredClone(store.state), password),
+      );
+      await writeFile(destination.filePath, data, { mode: 0o600 });
+      return destination.filePath;
+    },
+    "backup-import": async (input) => {
+      const password = z.string().min(8).max(1024).parse(input);
+      const selection = await dialog.showOpenDialog(window!, {
+        filters: [{ name: "飞历加密备份", extensions: ["fcbackup"] }],
+        properties: ["openFile"],
+      });
+      const file = selection.filePaths[0];
+      if (selection.canceled || !file) return null;
+      if ((await stat(file)).size > 50 * 1024 * 1024)
+        throw new Error("备份文件超过 50 MB");
+      return backups.import(
+        await decryptBackup(await readFile(file, "utf8"), password),
+      );
+    },
+    "undo-change": () => service.exclusive(() => service.undoChange()),
+    "restore-trash": (value) =>
+      service.exclusive(() => service.restoreTrash(id.parse(value))),
+    displays: () =>
+      screen.getAllDisplays().map((display, index) => ({
+        id: String(display.id),
+        label:
+          display.label ||
+          `显示器 ${index + 1}（${display.size.width}×${display.size.height}）`,
+      })),
+    "reminder-rule": (value, minutes) =>
+      service.exclusive(() =>
+        service.reminderRule(
+          id.parse(value),
+          z
+            .array(z.number().int().min(0).max(20160))
+            .max(12)
+            .nullable()
+            .parse(minutes),
+        ),
+      ),
+    "reminder-action": (value, action) =>
+      service.exclusive(() =>
+        service.reminderAction(
+          id.parse(value),
+          z.enum(["dismiss", "snooze5", "snooze15"]).parse(action),
+        ),
+      ),
+    "quick-capture": async (input) => {
+      if (z.enum(["open", "close"]).parse(input) === "open")
+        await showCapture();
+      else capture?.hide();
+    },
+    "save-template": (input) =>
+      service.exclusive(() =>
+        service.saveTemplate(
+          z
+            .object({
+              id: z.string().max(100),
+              name: z.string().trim().min(1).max(100),
+              title: z.string().trim().min(1).max(1000),
+              calendarId: id,
+              durationMinutes: z.number().int().min(1).max(20_160),
+              allDay: z.boolean(),
+              location: z.string().max(2000),
+              description: text,
+              reminder: z.number().int().min(-1).max(20_160),
+              recurrence: z.string().max(1000),
+            })
+            .parse(input),
+        ),
+      ),
+    "delete-template": (value) =>
+      service.exclusive(() => service.deleteTemplate(id.parse(value))),
     snapshot: () => service.exclusive(() => service.snapshot()),
     "save-event": (input) => {
       const parsed = z
-        .object({ event: eventSchema, scope: scopeSchema })
+        .object({
+          event: eventSchema,
+          scope: scopeSchema,
+          localReminders: z
+            .array(z.number().int().min(0).max(20160))
+            .max(12)
+            .optional(),
+        })
         .parse(input);
       return service.exclusive(() => service.saveEvent(parsed));
     },
@@ -226,50 +690,18 @@ async function main() {
         service.publishCalendar(id.parse(value), id.parse(target)),
       ),
     settings: (patch) =>
-      service.exclusive(() =>
-        service.settings(
-          z
-            .object({
-              defaultCalendarId: id.optional(),
-              autoSync: z.boolean().optional(),
-              syncMinutes: z.number().int().min(1).max(60).optional(),
-              feishuEnabled: z.boolean().optional(),
-              reminders: z.boolean().optional(),
-              weekends: z.boolean().optional(),
-              theme: z.enum(["light", "dark", "system"]).optional(),
-              calendarView: z.enum(CALENDAR_VIEWS).optional(),
-              closeToTray: z.boolean().optional(),
-              desktopEnabled: z.boolean().optional(),
-              desktopView: z.enum(["month", "agenda"]).optional(),
-              desktopTheme: z.enum(["light", "dark", "system"]).optional(),
-              desktopColor: z
-                .string()
-                .regex(/^#[0-9a-fA-F]{6}$/)
-                .optional(),
-              desktopOpacity: z.number().int().min(0).max(100).optional(),
-              desktopLocked: z.boolean().optional(),
-              autoCheckUpdates: z.boolean().optional(),
-              weekStartsOn: z
-                .union([z.literal(0), z.literal(1), z.literal(6)])
-                .optional(),
-              hour12: z.boolean().optional(),
-              dayStartHour: z.number().int().min(0).max(23).optional(),
-              dayEndHour: z.number().int().min(1).max(24).optional(),
-              defaultDurationMinutes: z
-                .number()
-                .int()
-                .min(15)
-                .max(240)
-                .optional(),
-              defaultReminder: z.number().int().min(-1).max(20160).optional(),
-              teachingStartDate: z
-                .union([z.literal(""), z.iso.date()])
-                .optional(),
-              teachingWeeks: z.number().int().min(1).max(104).optional(),
-            })
-            .parse(patch),
-        ),
-      ),
+      service.exclusive(async () => {
+        const parsed = settingsSchema.parse(patch);
+        const oldShortcut = store.state.settings.captureShortcut;
+        if (parsed.captureShortcut !== undefined)
+          configureShortcut(parsed.captureShortcut);
+        try {
+          return await service.settings(parsed);
+        } catch (error) {
+          configureShortcut(oldShortcut);
+          throw error;
+        }
+      }),
     "save-connection": (input) =>
       service.exclusive(() =>
         service.saveConnection(
@@ -277,7 +709,7 @@ async function main() {
             .object({
               id: z.string().max(100),
               name: z.string().trim().min(1).max(100),
-              kind: z.enum(["caldav", "webdav", "ics"]),
+              kind: z.enum(["caldav", "webdav", "ics", "google", "microsoft"]),
               url: z.string().max(4000),
               username: z.string().max(1000),
               password: z.string().max(1000).optional(),
@@ -413,7 +845,7 @@ async function main() {
     navigate: (input) => {
       const target = z
         .object({
-          settings: z.enum(["desktop", "updates"]).optional(),
+          settings: z.enum(["desktop", "updates", "reminders"]).optional(),
           event: z.unknown().optional(),
           date: z.iso.date().optional(),
         })
@@ -423,6 +855,13 @@ async function main() {
       let event: CalendarEvent | undefined;
       if (target.event && typeof target.event === "object") {
         const reference = target.event as CalendarEvent;
+        if (reference.id?.startsWith("special:")) {
+          const start = date.parse(reference.start);
+          event = specialEvents(store.state, {
+            start,
+            end: new Date(new Date(start).getTime() + 86400_000).toISOString(),
+          }).find((item) => item.id === reference.id);
+        }
         const original = store.state.events.find(
           (item) =>
             item.id === (reference.seriesId || reference.id) && !item.deleted,
@@ -469,7 +908,7 @@ async function main() {
   for (const [name, handler] of Object.entries(handlers)) {
     ipcMain.handle(`calendar:${name}`, async (event, ...args) => {
       if (quitting) throw new Error("飞历正在退出");
-      const source = [window, desktop.window].find(
+      const source = [window, desktop.window, capture].find(
         (target) => target?.webContents === event.sender,
       );
       const widgetAllowed = [
@@ -479,6 +918,11 @@ async function main() {
         "desktop-status",
         "desktop-range",
         "navigate",
+        "save-event",
+        "delete-event",
+        "save-template",
+        "reminder-rule",
+        "open-external",
       ];
       if (
         !source ||
@@ -488,7 +932,9 @@ async function main() {
         throw new Error("无效的调用来源");
       if (source === desktop.window && name === "settings") {
         args[0] = z
-          .object({ desktopView: z.enum(["month", "agenda"]).optional() })
+          .object({
+            desktopView: z.enum(["month", "agenda", "grid"]).optional(),
+          })
           .parse(args[0]);
       }
       try {
@@ -644,7 +1090,32 @@ async function main() {
   else await window.loadFile(path.join(__dirname, "..", "dist", "index.html"));
 
   let elapsed = 0;
-  const notified = new Set<string>();
+  let checkingReminders = false;
+  const checkReminders = () => {
+    if (checkingReminders || quitting) return;
+    checkingReminders = true;
+    void service
+      .exclusive(() => service.checkReminders())
+      .then((entries) => {
+        if (
+          !notificationsSupported ||
+          process.env.FEICALENDAR_DISABLE_NOTIFICATIONS === "1"
+        )
+          return;
+        for (const entry of entries.slice(-5)) {
+          const notification = new Notification({
+            title: entry.title,
+            body: entry.location || "打开提醒中心，可稍后提醒或查看日程",
+          });
+          notification.on("click", () => navigate({ settings: "reminders" }));
+          notification.show();
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        checkingReminders = false;
+      });
+  };
   const timer = setInterval(() => {
     if (quitting) return;
     elapsed += 15;
@@ -681,26 +1152,7 @@ async function main() {
         }
       })().catch(() => {});
     }
-    if (!store.state.settings.reminders || !notificationsSupported) return;
-    const now = Date.now();
-    const upcoming = expandLocalEvents(store.state.events, {
-      start: new Date(now - 60_000).toISOString(),
-      end: new Date(now + 15 * 86400_000).toISOString(),
-    });
-    for (const event of upcoming) {
-      if (event.allDay || event.reminder < 0 || event.completed) continue;
-      const at = new Date(event.start).getTime() - event.reminder * 60_000;
-      const key = `${event.id}/${at}`;
-      if (now >= at && now - at < 30_000 && !notified.has(key)) {
-        notified.add(key);
-        const notification = new Notification({
-          title: event.title,
-          body: event.location || "日程即将开始",
-        });
-        notification.on("click", showWindow);
-        notification.show();
-      }
-    }
+    checkReminders();
   }, 15_000);
   tray = new Tray(shellIcon);
   tray.setToolTip("飞历 FeiCalendar");
@@ -719,6 +1171,16 @@ async function main() {
     tray?.setContextMenu(
       Menu.buildFromTemplate([
         { label: "打开飞历", click: showWindow },
+        {
+          label: "快捷录入…",
+          click: () => {
+            void showCapture();
+          },
+        },
+        {
+          label: `提醒中心（${(store.state.reminderEntries || []).filter((entry) => entry.state === "unread").length}）`,
+          click: () => navigate({ settings: "reminders" }),
+        },
         { type: "separator" },
         {
           label: "开启桌面日历",
@@ -797,6 +1259,11 @@ async function main() {
       ]),
     );
   refreshTray();
+  try {
+    configureShortcut(store.state.settings.captureShortcut);
+  } catch (error) {
+    store.state.syncError = (error as Error).message;
+  }
   await desktop.apply(store.state.settings);
   await updater.restoreResult();
   let lastCheck = Date.now();

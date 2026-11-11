@@ -2,6 +2,65 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopAPI } from "../src/shared/types";
 
 const api: DesktopAPI = {
+  oauthConnect: (input) => ipcRenderer.invoke("calendar:oauth-connect", input),
+  oauthCancel: () => ipcRenderer.invoke("calendar:oauth-cancel"),
+  saveSemester: (value, activate) =>
+    ipcRenderer.invoke("calendar:save-semester", value, activate),
+  deleteSemester: (id) => ipcRenderer.invoke("calendar:delete-semester", id),
+  saveCourse: (value) => ipcRenderer.invoke("calendar:save-course", value),
+  deleteCourse: (id) => ipcRenderer.invoke("calendar:delete-course", id),
+  bulkEvents: (input) => ipcRenderer.invoke("calendar:bulk-events", input),
+  importPreview: (calendarId, range) =>
+    ipcRenderer.invoke("calendar:import-preview", calendarId, range),
+  importApply: (token, ids) =>
+    ipcRenderer.invoke("calendar:import-apply", token, ids),
+  printCalendar: (input, pdf) =>
+    ipcRenderer.invoke("calendar:print", input, pdf),
+  saveTask: (task) => ipcRenderer.invoke("calendar:save-task", task),
+  deleteTask: (id, removeScheduled) =>
+    ipcRenderer.invoke("calendar:delete-task", id, removeScheduled),
+  scheduleTask: (id, start, calendarId, blockId) =>
+    ipcRenderer.invoke(
+      "calendar:schedule-task",
+      id,
+      start,
+      calendarId,
+      blockId,
+    ),
+  saveCalendarSet: (set) =>
+    ipcRenderer.invoke("calendar:save-calendar-set", set),
+  deleteCalendarSet: (id) =>
+    ipcRenderer.invoke("calendar:delete-calendar-set", id),
+  applyCalendarSet: (id, desktop) =>
+    ipcRenderer.invoke("calendar:apply-calendar-set", id, desktop),
+  updateHolidays: () => ipcRenderer.invoke("calendar:update-holidays"),
+  holidayOverride: (date, value) =>
+    ipcRenderer.invoke("calendar:holiday-override", date, value),
+  saveSpecialDate: (value) =>
+    ipcRenderer.invoke("calendar:save-special-date", value),
+  deleteSpecialDate: (id) =>
+    ipcRenderer.invoke("calendar:delete-special-date", id),
+  backupList: () => ipcRenderer.invoke("calendar:backup-list"),
+  backupExport: (password) =>
+    ipcRenderer.invoke("calendar:backup-export", password),
+  backupImport: (password) =>
+    ipcRenderer.invoke("calendar:backup-import", password),
+  backupPreview: (id, options) =>
+    ipcRenderer.invoke("calendar:backup-preview", id, options),
+  backupRestore: (token) =>
+    ipcRenderer.invoke("calendar:backup-restore", token),
+  undoChange: () => ipcRenderer.invoke("calendar:undo-change"),
+  restoreTrash: (id) => ipcRenderer.invoke("calendar:restore-trash", id),
+  displays: () => ipcRenderer.invoke("calendar:displays"),
+  reminderRule: (id, minutes) =>
+    ipcRenderer.invoke("calendar:reminder-rule", id, minutes),
+  reminderAction: (id, action) =>
+    ipcRenderer.invoke("calendar:reminder-action", id, action),
+  quickCapture: (action) =>
+    ipcRenderer.invoke("calendar:quick-capture", action),
+  saveTemplate: (template) =>
+    ipcRenderer.invoke("calendar:save-template", template),
+  deleteTemplate: (id) => ipcRenderer.invoke("calendar:delete-template", id),
   desktopRange: (range) => ipcRenderer.invoke("calendar:desktop-range", range),
   desktop: (action) => ipcRenderer.invoke("calendar:desktop", action),
   desktopStatus: () => ipcRenderer.invoke("calendar:desktop-status"),
@@ -22,6 +81,7 @@ const api: DesktopAPI = {
   },
   snapshot: () => ipcRenderer.invoke("calendar:snapshot"),
   saveEvent: (input) => ipcRenderer.invoke("calendar:save-event", input),
+  saveEvents: (inputs) => ipcRenderer.invoke("calendar:save-events", inputs),
   deleteEvent: (id, scope) =>
     ipcRenderer.invoke("calendar:delete-event", id, scope),
   saveCalendar: (input) => ipcRenderer.invoke("calendar:save-calendar", input),

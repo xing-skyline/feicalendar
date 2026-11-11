@@ -36,6 +36,8 @@ import {
   Repeat2,
   MapPin,
   AlertCircle,
+  Undo2,
+  ListTodo,
 } from "lucide-react";
 import type {
   AppSnapshot,
@@ -53,11 +55,16 @@ import {
   hourTime,
   teachingWeek,
 } from "./shared/dates";
-import { expandLocalEvents } from "./shared/recurrence";
+import { expandCalendarEvents } from "./shared/occurrences";
+import DayLabel from "./components/DayLabel";
+import TaskSidebar from "./components/TaskSidebar";
+import CalendarSets from "./components/CalendarSets";
+import CalendarTools from "./components/CalendarTools";
 import MiniCalendar from "./components/MiniCalendar";
 import EventEditor from "./components/EventEditor";
 import SettingsDialog from "./components/SettingsDialog";
 import appIcon from "../build/icon.png";
+import { eventDraft } from "./shared/capture";
 
 const views = [
   { id: "timeGridDay", name: "日视图" },
@@ -104,6 +111,8 @@ const providerLabel = {
   caldav: "CalDAV",
   webdav: "WebDAV",
   ics: "订阅",
+  google: "Google",
+  microsoft: "Outlook",
 };
 
 export default function App() {
@@ -123,6 +132,8 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [toast, setToast] = useState("");
   const [showAgenda, setShowAgenda] = useState(true);
+  const [showTasks, setShowTasks] = useState(false);
+  const [showTools, setShowTools] = useState(false);
   const [calendarForm, setCalendarForm] = useState<Partial<CalendarSource>>();
   const [publishTarget, setPublishTarget] = useState("");
   const [calendarError, setCalendarError] = useState("");
@@ -206,38 +217,7 @@ export default function App() {
   const newEvent = useCallback(
     (start?: string, end?: string, allDay = false) => {
       if (!snapshot) return;
-      const defaultStart = new Date();
-      defaultStart.setMinutes(
-        Math.ceil(defaultStart.getMinutes() / 30) * 30,
-        0,
-        0,
-      );
-      const eventStart = start || defaultStart.toISOString();
-      const eventEnd =
-        end ||
-        new Date(
-          new Date(eventStart).getTime() +
-            snapshot.settings.defaultDurationMinutes * 60_000,
-        ).toISOString();
-      const writable =
-        snapshot.calendars.find(
-          (item) =>
-            item.id === snapshot.settings.defaultCalendarId && item.writable,
-        ) || snapshot.calendars.find((item) => item.writable)!;
-      setEditor({
-        id: "",
-        title: "",
-        start: eventStart,
-        end: eventEnd,
-        allDay,
-        calendarId: writable.id,
-        description: "",
-        location: "",
-        reminder: snapshot.settings.defaultReminder,
-        recurrence: "",
-        completed: false,
-        syncState: "local",
-      });
+      setEditor(eventDraft(snapshot, start, end, allDay));
     },
     [snapshot],
   );
@@ -278,6 +258,11 @@ export default function App() {
       )
         return;
       if (editor || settingsTab || calendarForm) return;
+      if (event.ctrlKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        void window.calendar.undoChange().then(setSnapshot).catch(showError);
+        return;
+      }
       if (event.key.toLowerCase() === "n") newEvent();
       if (event.key.toLowerCase() === "t") {
         calendarRef.current?.getApi().today();
@@ -313,8 +298,8 @@ export default function App() {
     ],
   );
   const occurrences = useMemo(
-    () => expandLocalEvents(snapshot?.events || [], range),
-    [snapshot?.events, range],
+    () => (snapshot ? expandCalendarEvents(snapshot, range) : []),
+    [snapshot?.events, snapshot?.specialDates, range],
   );
   const visibleEvents = useMemo(
     () => occurrences.filter((item) => visibleIds.has(item.calendarId)),
@@ -478,11 +463,41 @@ export default function App() {
       <div className="workspace">
         <nav className="rail" aria-label="主导航">
           <button
+            title="待办清单"
+            className={showTasks ? "active" : ""}
+            onClick={() => {
+              setShowTasks(!showTasks);
+              setTimeout(() => calendarRef.current?.getApi().updateSize(), 0);
+            }}
+          >
+            <ListTodo size={21} />
+          </button>
+          <button
             className="app-mark"
             title="飞历"
             onClick={() => navigate(new Date())}
           >
             <img src={appIcon} alt="飞历" />
+          </button>
+          <button
+            title="快捷录入"
+            onClick={() =>
+              void window.calendar.quickCapture("open").catch(showError)
+            }
+          >
+            <Plus size={20} />
+          </button>
+          <button
+            title="撤销上次日程操作"
+            disabled={!snapshot.history?.some((entry) => !entry.undone)}
+            onClick={() =>
+              void window.calendar
+                .undoChange()
+                .then(setSnapshot)
+                .catch(showError)
+            }
+          >
+            <Undo2 size={20} />
           </button>
           <button
             className={`rail-button ${view !== "listMonth" ? "active" : ""}`}
@@ -656,6 +671,13 @@ export default function App() {
               </button>
             </div>
             <div className="toolbar-right">
+              <button
+                className="icon-button"
+                title="搜索、批量操作、导入与打印"
+                onClick={() => setShowTools(true)}
+              >
+                <MoreHorizontal size={18} />
+              </button>
               <div className="search-field">
                 <Search size={16} />
                 <input
@@ -699,6 +721,7 @@ export default function App() {
             </div>
           </header>
           <div className="view-toolbar">
+            <CalendarSets snapshot={snapshot} update={setSnapshot} />
             <div className="view-tabs" role="tablist" aria-label="日历视图">
               {views.map((item) => (
                 <button
@@ -752,12 +775,52 @@ export default function App() {
               aria-labelledby={`view-${view}`}
             >
               <FullCalendar
+                droppable
+                drop={(info) => {
+                  const taskId = info.draggedEl.dataset.taskId;
+                  if (taskId)
+                    void window.calendar
+                      .scheduleTask(
+                        taskId,
+                        info.allDay
+                          ? `${info.dateStr.slice(0, 10)}T09:00:00+08:00`
+                          : info.dateStr,
+                        snapshot.settings.defaultCalendarId,
+                        crypto.randomUUID(),
+                      )
+                      .then(setSnapshot)
+                      .catch(showError);
+                }}
                 ref={calendarRef}
                 plugins={plugins}
                 locale={zhLocale}
                 timeZone={TIME_ZONE}
                 initialView={snapshot.settings.calendarView}
-                views={customViews}
+                views={{
+                  ...customViews,
+                  dayGridMonth: {
+                    dayCellContent: (info: DayCellContentArg) => (
+                      <>
+                        <span>{dayNumberContent(info)}</span>
+                        <DayLabel
+                          day={dateKey(info.date)}
+                          snapshot={snapshot}
+                        />
+                      </>
+                    ),
+                  },
+                  multiMonthYear: {
+                    dayCellContent: (info: DayCellContentArg) => (
+                      <>
+                        <span>{dayNumberContent(info)}</span>
+                        <DayLabel
+                          day={dateKey(info.date)}
+                          snapshot={snapshot}
+                        />
+                      </>
+                    ),
+                  },
+                }}
                 headerToolbar={false}
                 height="100%"
                 firstDay={snapshot.settings.weekStartsOn}
@@ -796,6 +859,9 @@ export default function App() {
                     <span>{weekdayFormat.format(info.date)}</span>
                     {info.view.type.startsWith("timeGrid") && (
                       <b>{Number(dateKey(info.date).slice(-2))}</b>
+                    )}
+                    {info.view.type.startsWith("timeGrid") && (
+                      <DayLabel day={dateKey(info.date)} snapshot={snapshot} />
                     )}
                   </div>
                 )}
@@ -908,7 +974,20 @@ export default function App() {
                 </div>
               )}
             </section>
-            {showAgenda && (
+            {showTasks && (
+              <TaskSidebar
+                snapshot={snapshot}
+                update={setSnapshot}
+                onClose={() => {
+                  setShowTasks(false);
+                  setTimeout(
+                    () => calendarRef.current?.getApi().updateSize(),
+                    0,
+                  );
+                }}
+              />
+            )}
+            {showAgenda && !showTasks && (
               <aside className="agenda-sidebar">
                 <div className="agenda-date">
                   <span>{format(selectedDate, "EEEE", { locale: zhCN })}</span>
@@ -1003,8 +1082,26 @@ export default function App() {
           </div>
         </main>
       </div>
+      {showTools && (
+        <CalendarTools
+          snapshot={snapshot}
+          update={setSnapshot}
+          initialDate={dateKey(selectedDate)}
+          onClose={() => setShowTools(false)}
+          onEdit={(event) => {
+            setShowTools(false);
+            setEditor(event);
+          }}
+        />
+      )}
       {editor && (
         <EventEditor
+          context={snapshot}
+          templates={snapshot.templates}
+          localReminderMinutes={
+            snapshot.reminderRules?.[editor.id] ??
+            snapshot.reminderRules?.[editor.seriesId || ""]
+          }
           key={`${editor.id}/${editor.start}`}
           initial={editor}
           calendars={snapshot.calendars}
@@ -1021,6 +1118,9 @@ export default function App() {
               ...event,
               id: "",
               remoteId: undefined,
+              taskId: undefined,
+              courseId: undefined,
+              courseWeek: undefined,
               remoteFingerprint: undefined,
               remoteEtag: undefined,
               seriesId: undefined,

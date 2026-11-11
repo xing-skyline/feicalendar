@@ -24,6 +24,12 @@ import type {
 import { hourTime } from "../shared/dates";
 import DesktopSettings from "./DesktopSettings";
 import UpdateSettings from "./UpdateSettings";
+import CaptureSettings from "./CaptureSettings";
+import ReminderCenter from "./ReminderCenter";
+import RecoverySettings from "./RecoverySettings";
+import HolidaySettings from "./HolidaySettings";
+import CourseSettings from "./CourseSettings";
+import OAuthConnections from "./OAuthConnections";
 
 const connectionPresets = [
   { name: "通用 CalDAV", kind: "caldav", url: "", readOnly: false },
@@ -137,6 +143,34 @@ export default function SettingsDialog({
         <div className="settings-layout">
           <nav className="settings-nav">
             <button
+              className={tab === "courses" ? "active" : ""}
+              onClick={() => setTab("courses")}
+            >
+              <GraduationCap size={17} />
+              学期与课程
+            </button>
+            <button
+              className={tab === "holidays" ? "active" : ""}
+              onClick={() => setTab("holidays")}
+            >
+              <CalendarDays size={17} />
+              农历与纪念日
+            </button>
+            <button
+              className={tab === "recovery" ? "active" : ""}
+              onClick={() => setTab("recovery")}
+            >
+              <Trash2 size={17} />
+              回收站与备份
+            </button>
+            <button
+              className={tab === "reminders" ? "active" : ""}
+              onClick={() => setTab("reminders")}
+            >
+              <AlertCircle size={17} />
+              提醒中心
+            </button>
+            <button
               className={tab === "connections" ? "active" : ""}
               onClick={() => setTab("connections")}
             >
@@ -191,8 +225,29 @@ export default function SettingsDialog({
             <div className="settings-version">FeiCalendar {version}</div>
           </nav>
           <div className="settings-content">
+            {tab === "courses" && (
+              <CourseSettings snapshot={snapshot} update={update} />
+            )}
+            {tab === "holidays" && (
+              <HolidaySettings
+                snapshot={snapshot}
+                update={update}
+                configure={configure}
+              />
+            )}
+            {tab === "recovery" && (
+              <RecoverySettings snapshot={snapshot} update={update} />
+            )}
+            {tab === "reminders" && (
+              <ReminderCenter
+                snapshot={snapshot}
+                configure={configure}
+                update={update}
+              />
+            )}
             {tab === "desktop" && (
               <DesktopSettings
+                calendars={snapshot.calendars}
                 settings={snapshot.settings}
                 configure={configure}
               />
@@ -393,79 +448,90 @@ export default function SettingsDialog({
                   为多个飞历客户端同步日程和教学周。
                   每个连接独立保存，可分别暂停和恢复。
                 </p>
-                {snapshot.connections.map((item) => (
-                  <div className="subscription-row" key={item.id}>
-                    <Link2 size={18} />
-                    <div>
-                      <b>{item.name}</b>
-                      <small>
-                        {item.kind.toUpperCase()} ·{" "}
-                        {item.teachingConflict
-                          ? "配置冲突"
-                          : item.enabled === false
-                            ? "已暂停"
-                            : item.error
-                              ? "连接失败"
-                              : item.lastSync
-                                ? "已同步"
-                                : "待同步"}
-                      </small>
-                      {item.error && (
-                        <small className="error-text">{item.error}</small>
-                      )}
-                    </div>
-                    <label className="inline-check">
-                      <input
-                        type="checkbox"
-                        aria-label={`启用 ${item.name}`}
-                        checked={item.enabled !== false}
-                        disabled={busy}
-                        onChange={(e) =>
-                          void perform(async () => {
-                            update(
-                              await window.calendar.saveConnection({
-                                ...item,
-                                enabled: e.target.checked,
-                              }),
-                            );
-                          })
-                        }
-                      />
-                      启用
-                    </label>
-                    <button
-                      className="text-button"
-                      onClick={() => setConnection(item)}
-                    >
-                      编辑
-                    </button>
-                    <button
-                      className="icon-button danger"
-                      title="移除连接"
-                      onClick={() => setRemoving(item.id)}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                    {removing === item.id && (
-                      <div className="inline-confirm">
-                        移除此连接及本地缓存？云端日程会保留。
-                        <button
-                          onClick={() =>
+                <OAuthConnections
+                  snapshot={snapshot}
+                  update={update}
+                  onSync={onSync}
+                />
+                {snapshot.connections
+                  .filter(
+                    (item) => !["google", "microsoft"].includes(item.kind),
+                  )
+                  .map((item) => (
+                    <div className="subscription-row" key={item.id}>
+                      <Link2 size={18} />
+                      <div>
+                        <b>{item.name}</b>
+                        <small>
+                          {item.kind.toUpperCase()} ·{" "}
+                          {item.teachingConflict
+                            ? "配置冲突"
+                            : item.enabled === false
+                              ? "已暂停"
+                              : item.error
+                                ? "连接失败"
+                                : item.lastSync
+                                  ? "已同步"
+                                  : "待同步"}
+                        </small>
+                        {item.error && (
+                          <small className="error-text">{item.error}</small>
+                        )}
+                      </div>
+                      <label className="inline-check">
+                        <input
+                          type="checkbox"
+                          aria-label={`启用 ${item.name}`}
+                          checked={item.enabled !== false}
+                          disabled={busy}
+                          onChange={(e) =>
                             void perform(async () => {
                               update(
-                                await window.calendar.removeConnection(item.id),
+                                await window.calendar.saveConnection({
+                                  ...item,
+                                  enabled: e.target.checked,
+                                }),
                               );
-                              setRemoving("");
                             })
                           }
-                        >
-                          确认移除
-                        </button>
-                        <button onClick={() => setRemoving("")}>取消</button>
-                      </div>
-                    )}
-                  </div>
-                ))}
+                        />
+                        启用
+                      </label>
+                      <button
+                        className="text-button"
+                        onClick={() => setConnection(item)}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        className="icon-button danger"
+                        title="移除连接"
+                        onClick={() => setRemoving(item.id)}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                      {removing === item.id && (
+                        <div className="inline-confirm">
+                          移除此连接及本地缓存？云端日程会保留。
+                          <button
+                            onClick={() =>
+                              void perform(async () => {
+                                update(
+                                  await window.calendar.removeConnection(
+                                    item.id,
+                                  ),
+                                );
+                                setRemoving("");
+                              })
+                            }
+                          >
+                            确认移除
+                          </button>
+                          <button onClick={() => setRemoving("")}>取消</button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 {connection && (
                   <form
                     className="subscription-form"
@@ -812,6 +878,11 @@ export default function SettingsDialog({
                   </button>
                 </div>
                 <div className="shortcut-guide">
+                  <CaptureSettings
+                    snapshot={snapshot}
+                    configure={configure}
+                    update={update}
+                  />
                   <h4>键盘快捷键</h4>
                   <p>
                     <kbd>N</kbd>新建日程 <kbd>T</kbd>回到今天 <kbd>Ctrl K</kbd>

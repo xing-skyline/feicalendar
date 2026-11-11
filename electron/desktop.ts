@@ -29,7 +29,18 @@ export class DesktopPanel {
     };
   }
   async apply(settings: Settings) {
-    this.settings = settings;
+    if (this.opening) await this.opening.catch(() => {});
+    const modeChanged =
+      this.settings && this.settings.desktopMode !== settings.desktopMode;
+    const displayChanged =
+      this.settings && this.settings.desktopDisplay !== settings.desktopDisplay;
+    const layoutChanged =
+      this.settings &&
+      this.settings.desktopView !== settings.desktopView &&
+      settings.desktopView === "grid";
+    this.settings = { ...settings };
+    if (modeChanged) this.close();
+    if (displayChanged || layoutChanged) this.reset();
     if (!settings.desktopEnabled) {
       this.close();
       return;
@@ -42,20 +53,26 @@ export class DesktopPanel {
     return this.opening;
   }
   private defaultBounds(): Rectangle {
-    const area = screen.getPrimaryDisplay().workArea;
+    const display =
+      screen
+        .getAllDisplays()
+        .find((item) => String(item.id) === this.settings.desktopDisplay) ||
+      screen.getPrimaryDisplay();
+    const area = display.workArea;
+    const width =
+      this.settings.desktopView === "grid"
+        ? Math.min(1100, area.width - 48)
+        : 380;
     return {
-      x: area.x + area.width - 404,
+      x: area.x + area.width - width - 24,
       y: area.y + 28,
-      width: 380,
+      width,
       height: Math.min(650, area.height - 56),
     };
   }
   private clamp(bounds: Rectangle) {
     const area = screen.getDisplayMatching(bounds).workArea;
-    const width = Math.min(
-      Math.max(320, bounds.width),
-      Math.min(640, area.width),
-    );
+    const width = Math.min(Math.max(320, bounds.width), area.width);
     const height = Math.min(Math.max(360, bounds.height), area.height);
     return {
       x: Math.round(
@@ -126,7 +143,8 @@ export class DesktopPanel {
         hash: "desktop",
       });
     if (panel.isDestroyed()) return;
-    this.host?.attach();
+    if (this.settings.desktopMode === "embedded") this.host?.attach();
+    panel.setAlwaysOnTop(this.settings.desktopMode === "topmost");
     this.host?.place(this.bounds);
     if (!this.hidden) panel.showInactive();
     this.changed();
@@ -136,7 +154,8 @@ export class DesktopPanel {
         void this.apply(this.settings).catch(() => {});
         return;
       }
-      if (!this.host?.embedded) this.host?.attach();
+      if (this.settings.desktopMode === "embedded" && !this.host?.embedded)
+        this.host?.attach();
     }, 10_000);
   }
   async show() {

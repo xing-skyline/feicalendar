@@ -12,8 +12,17 @@ import {
   Check,
   Copy,
 } from "lucide-react";
-import type { CalendarEvent, CalendarSource, EventSave } from "../shared/types";
+import type {
+  CalendarEvent,
+  CalendarSource,
+  EventSave,
+  EventTemplate,
+  AppSnapshot,
+} from "../shared/types";
+import { templateDraft } from "../shared/capture";
+import { meetingLink } from "../shared/meetings";
 import { dateKey, inputTime, shiftDate } from "../shared/dates";
+import { eventConflicts } from "../shared/availability";
 
 export default function EventEditor({
   initial,
@@ -23,6 +32,9 @@ export default function EventEditor({
   onDelete,
   onClose,
   onDuplicate,
+  templates = [],
+  localReminderMinutes,
+  context,
 }: {
   initial: CalendarEvent;
   calendars: CalendarSource[];
@@ -31,12 +43,24 @@ export default function EventEditor({
   onDelete: (id: string, scope?: "single" | "all") => Promise<void>;
   onClose: () => void;
   onDuplicate: (event: CalendarEvent) => void;
+  templates?: EventTemplate[];
+  localReminderMinutes?: number[];
+  context?: AppSnapshot;
 }) {
   const [event, setEvent] = useState(initial);
+  const conflicts = context ? eventConflicts(context, event) : [];
   const [scope, setScope] = useState<"single" | "all" | "">("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [templateName, setTemplateName] = useState("");
+  const [templateForm, setTemplateForm] = useState(false);
+  const [templateNotice, setTemplateNotice] = useState("");
+  const [localRule, setLocalRule] = useState<number[] | undefined>(
+    localReminderMinutes,
+  );
+  const [reminderNotice, setReminderNotice] = useState("");
+  const meeting = meetingLink(event);
   const calendar = calendars.find((item) => item.id === event.calendarId);
   const readOnly = !calendar?.writable;
   const remoteOccurrence = Boolean(
@@ -96,7 +120,13 @@ export default function EventEditor({
         aria-label={existing ? "日程详情" : "新建日程"}
         onSubmit={(e) => {
           e.preventDefault();
-          void perform(() => onSave({ event, scope: scope || undefined }));
+          void perform(() =>
+            onSave({
+              event,
+              scope: scope || undefined,
+              localReminders: localRule,
+            }),
+          );
         }}
       >
         <header className="modal-heading">
@@ -116,6 +146,34 @@ export default function EventEditor({
             <X size={19} />
           </button>
         </header>
+        {!existing && templates.length > 0 && (
+          <div className="template-controls">
+            <select
+              aria-label="日程模板"
+              value=""
+              onChange={(change) => {
+                const template = templates.find(
+                  (item) => item.id === change.target.value,
+                );
+                if (template) setEvent(templateDraft(template, event));
+              }}
+            >
+              <option value="">使用常用模板</option>
+              {templates
+                .filter((item) =>
+                  calendars.some(
+                    (calendar) =>
+                      calendar.id === item.calendarId && calendar.writable,
+                  ),
+                )
+                .map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+            </select>
+          </div>
+        )}
         <input
           className="event-title-input"
           aria-label="日程标题"
@@ -127,6 +185,16 @@ export default function EventEditor({
           maxLength={1000}
           onChange={(e) => patch({ title: e.target.value })}
         />
+        {conflicts.length > 0 && (
+          <details className="conflict-notice">
+            <summary>与 {conflicts.length} 项日程或缓冲时间重叠</summary>
+            {conflicts.map((item) => (
+              <p key={item.id}>
+                {item.title} · {inputTime(item.start).replace("T", " ")}
+              </p>
+            ))}
+          </details>
+        )}
         <label className="editor-row">
           <CalendarDays size={18} />
           <span>所属日历</span>
@@ -285,6 +353,61 @@ export default function EventEditor({
             onChange={(e) => patch({ location: e.target.value })}
           />
         </label>
+        <details className="local-reminders">
+          <summary>本机多次提醒</summary>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={localRule !== undefined}
+              onChange={(change) =>
+                setLocalRule(change.target.checked ? [10] : undefined)
+              }
+            />
+            使用自定义本机提醒
+          </label>
+          {localRule !== undefined && (
+            <div className="reminder-options">
+              {[0, 5, 10, 15, 30, 60, 1440].map((minutes) => (
+                <label key={minutes}>
+                  <input
+                    type="checkbox"
+                    checked={localRule.includes(minutes)}
+                    onChange={(change) =>
+                      setLocalRule(
+                        change.target.checked
+                          ? [...localRule, minutes]
+                          : localRule.filter((value) => value !== minutes),
+                      )
+                    }
+                  />
+                  {minutes === 0
+                    ? "开始时"
+                    : minutes === 1440
+                      ? "提前一天"
+                      : `提前 ${minutes} 分钟`}
+                </label>
+              ))}
+            </div>
+          )}
+          <small>
+            适用于当前电脑，也可用于只读订阅。全天提醒时间在提醒中心设置。
+          </small>
+          {existing && (
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                void window.calendar
+                  .reminderRule(event.id, localRule ?? null)
+                  .then(() => setReminderNotice("本机提醒已保存"))
+                  .catch((error: Error) => setError(error.message))
+              }
+            >
+              保存本机提醒
+            </button>
+          )}
+          {reminderNotice && <p role="status">{reminderNotice}</p>}
+        </details>
         <label className="editor-notes">
           <AlignLeft size={18} />
           <textarea
@@ -310,10 +433,57 @@ export default function EventEditor({
         )}
         {readOnly && (
           <p className="info-text">
-            此日程来自订阅。可以复制到可写入的日历后编辑。
+            此日程为只读，可在来源设置中管理，也可以复制到可写入的日历后编辑。
           </p>
         )}
         {event.error && <p className="error-text">{event.error}</p>}
+        {templateForm && (
+          <div className="template-controls">
+            <input
+              aria-label="模板名称"
+              placeholder="模板名称"
+              value={templateName}
+              maxLength={100}
+              onChange={(change) => setTemplateName(change.target.value)}
+            />
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy || !templateName.trim() || !event.title.trim()}
+              onClick={() => {
+                setBusy(true);
+                void window.calendar
+                  .saveTemplate({
+                    id: "",
+                    name: templateName,
+                    title: event.title,
+                    calendarId: event.calendarId,
+                    durationMinutes: Math.round(
+                      (new Date(event.end).getTime() -
+                        new Date(event.start).getTime()) /
+                        60_000,
+                    ),
+                    allDay: event.allDay,
+                    location: event.location,
+                    description: event.description,
+                    reminder: event.reminder,
+                    recurrence: event.recurrence,
+                  })
+                  .then(() => {
+                    setTemplateForm(false);
+                    setTemplateNotice(
+                      "已保存模板，可在新建日程和快捷录入中使用",
+                    );
+                  })
+                  .catch((error: Error) => setError(error.message))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              保存模板
+            </button>
+          </div>
+        )}
+        {templateNotice && <p role="status">{templateNotice}</p>}
         {error && (
           <p className="error-text" role="alert">
             {error}
@@ -343,6 +513,27 @@ export default function EventEditor({
         )}
         <footer className="editor-footer">
           <div>
+            {!readOnly && (
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => {
+                  setTemplateName(event.title);
+                  setTemplateForm(!templateForm);
+                }}
+              >
+                存为模板
+              </button>
+            )}
+            {meeting && (
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => void window.calendar.openExternal(meeting)}
+              >
+                加入会议
+              </button>
+            )}
             {existing && !readOnly && (
               <button
                 type="button"

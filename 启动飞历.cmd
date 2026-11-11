@@ -1,8 +1,8 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if exist "release\FeiCalendar-0.5.1-win-x64.exe" (
-  start "" "release\FeiCalendar-0.5.1-win-x64.exe"
+if exist "release\FeiCalendar-0.5.2-win-x64.exe" (
+  start "" "release\FeiCalendar-0.5.2-win-x64.exe"
 ) else (
   if exist "release\win-unpacked\FeiCalendar.exe" (
     start "" "release\win-unpacked\FeiCalendar.exe"

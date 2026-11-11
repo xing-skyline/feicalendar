@@ -36,6 +36,25 @@ try {
   panel.on("pageerror", (error) => errors.push(error.message));
   await expect(panel.locator(".desktop-panel")).toBeVisible();
   await expect(panel.locator(".desktop-week")).toHaveCount(6);
+  for (const mode of ["floating", "topmost", "embedded"]) {
+    await page.getByLabel("桌面窗口模式").selectOption(mode);
+    await expect
+      .poll(() => page.evaluate(() => window.calendar.desktopStatus()))
+      .toEqual({
+        mode: mode === "embedded" ? "embedded" : "floating",
+        visible: true,
+      });
+    await expect
+      .poll(() =>
+        application.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows()
+            .find((win) => win.webContents.getURL().endsWith("#desktop"))
+            ?.isAlwaysOnTop(),
+        ),
+      )
+      .toBe(mode === "topmost");
+  }
+  panel = application.windows().find((item) => item.url().endsWith("#desktop"));
   // Model cursor movement without moving the user's system pointer. The real
   // renderer pointer capture, IPC and native SetWindowPos path still execute.
   await application.evaluate(({ screen }) => {
@@ -142,17 +161,29 @@ try {
     .toBe(100);
   await page.getByLabel("关闭设置").click();
   await panel.getByLabel("新建日程", { exact: true }).click();
-  await page.getByLabel("日程标题", { exact: true }).fill("桌面面板同步验证");
-  await page.getByRole("button", { name: "保存日程", exact: true }).click();
+  await panel.getByLabel("日程标题", { exact: true }).fill("桌面面板同步验证");
+  await panel.getByRole("button", { name: "保存日程", exact: true }).click();
   await expect(
     panel.getByRole("button", { name: /桌面面板同步验证/ }),
   ).toBeVisible();
   await panel.getByRole("button", { name: /桌面面板同步验证/ }).click();
-  await expect(page.getByLabel("日程标题", { exact: true })).toHaveValue(
+  await expect(panel.getByLabel("日程标题", { exact: true })).toHaveValue(
     "桌面面板同步验证",
   );
-  await page.getByLabel("日程标题", { exact: true }).fill("桌面修改已刷新");
-  await page.getByRole("button", { name: "保存日程", exact: true }).click();
+  await panel.getByLabel("日程标题", { exact: true }).fill("桌面修改已刷新");
+  await panel.getByRole("button", { name: "保存日程", exact: true }).click();
+  await expect(
+    panel.getByRole("button", { name: /桌面修改已刷新/ }),
+  ).toBeVisible();
+  await page.evaluate(() =>
+    window.calendar.settings({ desktopCalendarIds: [] }),
+  );
+  await expect(
+    panel.getByRole("button", { name: /桌面修改已刷新/ }),
+  ).toHaveCount(0);
+  await page.evaluate(() =>
+    window.calendar.settings({ desktopCalendarIds: null }),
+  );
   await expect(
     panel.getByRole("button", { name: /桌面修改已刷新/ }),
   ).toBeVisible();

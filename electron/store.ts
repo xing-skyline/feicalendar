@@ -1,4 +1,13 @@
-import { mkdir, readFile, writeFile, rename, copyFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  rename,
+  copyFile,
+  readdir,
+  unlink,
+} from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
 import type { AppSnapshot } from "../src/shared/types";
 import { CALENDAR_VIEWS } from "../src/shared/types";
@@ -31,17 +40,31 @@ export function emptyState(): AppSnapshot {
       closeToTray: true,
       desktopEnabled: false,
       desktopView: "month",
+      desktopMode: "embedded",
+      desktopDisplay: "",
+      desktopCalendarIds: null,
+      desktopFontSize: 13,
+      desktopRowGap: 8,
+      desktopMaxEvents: 4,
       desktopTheme: "system",
       desktopColor: "#5474ee",
       desktopOpacity: 88,
       desktopLocked: false,
       autoCheckUpdates: true,
+      captureShortcut: "CommandOrControl+Alt+N",
+      allDayReminderTime: "09:00",
+      mutedReminderCalendars: [],
+      showLunar: true,
+      showSolarTerms: true,
+      showHolidays: true,
       weekStartsOn: 1,
       hour12: false,
       dayStartHour: 0,
       dayEndHour: 24,
       defaultDurationMinutes: 60,
       defaultReminder: 10,
+      bufferBeforeMinutes: 0,
+      bufferAfterMinutes: 0,
       teachingStartDate: "",
       teachingWeeks: 20,
     },
@@ -98,5 +121,29 @@ export class Store {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     await rename(temporary, this.file);
+    try {
+      const folder = path.join(this.directory, "backups");
+      await mkdir(folder, { recursive: true });
+      const day = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Shanghai",
+      }).format(new Date());
+      try {
+        await copyFile(
+          this.file,
+          path.join(folder, `${day}.json`),
+          constants.COPYFILE_EXCL,
+        );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      const files = (await readdir(folder))
+        .filter((name) => /^\d{4}-\d{2}-\d{2}\.json$/.test(name))
+        .sort();
+      for (const name of files.slice(0, -30))
+        await unlink(path.join(folder, name));
+      this.state.backupError = undefined;
+    } catch {
+      this.state.backupError = "自动备份未完成，请检查数据目录空间和写入权限";
+    }
   }
 }
