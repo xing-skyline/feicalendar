@@ -20,30 +20,64 @@ export function teachingWeek(
   return week >= 1 && week <= totalWeeks ? week : null;
 }
 
+const dateFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+const timeFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: TIME_ZONE,
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+const dateKeyCache = new Map<string, string>();
+const inputTimeCache = new Map<string, string>();
+
+export function clearDateCaches() {
+  dateKeyCache.clear();
+  inputTimeCache.clear();
+}
+
 export function dateKey(input: Date | string): string {
-  const date = new Date(input);
+  if (typeof input === "string") {
+    const cached = dateKeyCache.get(input);
+    if (cached !== undefined) return cached;
+  }
+  const date = input instanceof Date ? input : new Date(input);
   if (!Number.isFinite(date.getTime())) return "";
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const part = (type: string) =>
-    parts.find((item) => item.type === type)?.value;
-  return `${part("year")}-${part("month")}-${part("day")}`;
+  const parts = dateFormatter.formatToParts(date);
+  let year = "";
+  let month = "";
+  let day = "";
+  for (const item of parts) {
+    if (item.type === "year") year = item.value;
+    else if (item.type === "month") month = item.value;
+    else if (item.type === "day") day = item.value;
+  }
+  const result = `${year}-${month}-${day}`;
+  if (typeof input === "string") {
+    if (dateKeyCache.size > 2048) dateKeyCache.clear();
+    dateKeyCache.set(input, result);
+  }
+  return result;
 }
 
 export function inputTime(input: string): string {
-  if (!Number.isFinite(new Date(input).getTime())) return "";
-  if (input.length === 10) return `${input}T09:00`;
-  const time = new Intl.DateTimeFormat("en-GB", {
-    timeZone: TIME_ZONE,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(new Date(input));
-  return `${dateKey(input)}T${time}`;
+  const cached = inputTimeCache.get(input);
+  if (cached !== undefined) return cached;
+  const date = new Date(input);
+  if (!Number.isFinite(date.getTime())) return "";
+  const result =
+    input.length === 10
+      ? `${input}T09:00`
+      : `${dateKey(date)}T${timeFormatter.format(date)}`;
+  if (inputTimeCache.size > 2048) inputTimeCache.clear();
+  inputTimeCache.set(input, result);
+  return result;
 }
 
 export function shiftDate(value: string, days: number): string {
@@ -59,7 +93,7 @@ export function overlaps(
   range: { start: string; end: string },
 ): boolean {
   return (
-    new Date(start).getTime() < new Date(range.end).getTime() &&
-    new Date(end).getTime() > new Date(range.start).getTime()
+    Date.parse(start) < Date.parse(range.end) &&
+    Date.parse(end) > Date.parse(range.start)
   );
 }

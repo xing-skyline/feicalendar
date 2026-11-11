@@ -49,39 +49,58 @@ export default function CalendarTools({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [visibleLimit, setVisibleLimit] = useState(200);
   const validRange = Boolean(
     from &&
       to &&
       from <= to &&
-      new Date(to).getTime() - new Date(from).getTime() < 400 * 86400_000,
+      Date.parse(to) - Date.parse(from) < 400 * 86400_000,
   );
-  const results = useMemo(
+  const calendarMap = useMemo(
+    () => new Map(snapshot.calendars.map((c) => [c.id, c.name])),
+    [snapshot.calendars],
+  );
+  const expandedInRange = useMemo(
     () =>
       validRange
         ? expandCalendarEvents(snapshot, { start: from, end: shiftDate(to, 1) })
-            .filter(
-              (event) =>
-                (!calendarFilter || event.calendarId === calendarFilter) &&
-                `${event.title} ${event.description}`
-                  .toLowerCase()
-                  .includes(query.toLowerCase()) &&
-                event.location.toLowerCase().includes(location.toLowerCase()) &&
-                (!status ||
-                  (status === "completed"
-                    ? event.completed
-                    : status === "open"
-                      ? !event.completed
-                      : event.syncState === status)),
-            )
-            .sort((a, b) => a.start.localeCompare(b.start))
         : [],
-    [snapshot, from, to, query, location, calendarFilter, status, validRange],
+    [snapshot.events, snapshot.specialDates, from, to, validRange],
   );
-  const selectedIds = selected.filter((id) =>
-    results.some(
-      (event) => event.id === id && event.calendarId !== "special-dates",
-    ),
+  const results = useMemo(() => {
+    const q = query.toLowerCase();
+    const loc = location.toLowerCase();
+    return expandedInRange
+      .filter(
+        (event) =>
+          (!calendarFilter || event.calendarId === calendarFilter) &&
+          (!q ||
+            event.title.toLowerCase().includes(q) ||
+            event.description.toLowerCase().includes(q)) &&
+          (!loc || event.location.toLowerCase().includes(loc)) &&
+          (!status ||
+            (status === "completed"
+              ? event.completed
+              : status === "open"
+                ? !event.completed
+                : event.syncState === status)),
+      )
+      .sort((a, b) => a.start.localeCompare(b.start));
+  }, [expandedInRange, query, location, calendarFilter, status]);
+  const selectableIds = useMemo(
+    () =>
+      new Set(
+        results
+          .filter((event) => event.calendarId !== "special-dates")
+          .map((event) => event.id),
+      ),
+    [results],
   );
+  const selectedIds = useMemo(
+    () => selected.filter((id) => selectableIds.has(id)),
+    [selected, selectableIds],
+  );
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const perform = async (operation: () => Promise<void>) => {
     setBusy(true);
     setError("");
@@ -229,23 +248,12 @@ export default function CalendarTools({
                   <input
                     type="checkbox"
                     checked={
-                      results.some(
-                        (event) => event.calendarId !== "special-dates",
-                      ) &&
-                      selectedIds.length ===
-                        results.filter(
-                          (event) => event.calendarId !== "special-dates",
-                        ).length
+                      selectableIds.size > 0 &&
+                      selectedIds.length === selectableIds.size
                     }
                     onChange={(event) =>
                       setSelected(
-                        event.target.checked
-                          ? results
-                              .filter(
-                                (item) => item.calendarId !== "special-dates",
-                              )
-                              .map((item) => item.id)
-                          : [],
+                        event.target.checked ? [...selectableIds] : [],
                       )
                     }
                   />
@@ -319,13 +327,13 @@ export default function CalendarTools({
                 2000 项。
               </p>
               <div className="tools-results">
-                {results.map((event) => (
+                {results.slice(0, visibleLimit).map((event) => (
                   <div className="tools-event" key={event.id}>
                     <input
                       type="checkbox"
                       aria-label={`选择 ${event.title} ${dateKey(event.start)}`}
                       disabled={event.calendarId === "special-dates"}
-                      checked={selectedIds.includes(event.id)}
+                      checked={selectedIdSet.has(event.id)}
                       onChange={(input) =>
                         setSelected(
                           toggle(selected, event.id, input.target.checked),
@@ -336,16 +344,21 @@ export default function CalendarTools({
                       <b>{event.title}</b>
                       <small>
                         {inputTime(event.start).replace("T", " ")} ·{" "}
-                        {
-                          snapshot.calendars.find(
-                            (calendar) => calendar.id === event.calendarId,
-                          )?.name
-                        }{" "}
-                        {event.location}
+                        {calendarMap.get(event.calendarId)} {event.location}
                       </small>
                     </button>
                   </div>
                 ))}
+                {results.length > visibleLimit && (
+                  <div style={{ padding: "12px", textAlign: "center" }}>
+                    <button
+                      className="secondary"
+                      onClick={() => setVisibleLimit((prev) => prev + 400)}
+                    >
+                      显示更多（已显示 {visibleLimit} / {results.length} 项）
+                    </button>
+                  </div>
+                )}
               </div>
             </>
           )}

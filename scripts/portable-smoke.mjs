@@ -19,7 +19,37 @@ import { fileURLToPath } from "node:url";
 import { checkCalendarViews } from "./check-views.mjs";
 import { checkCalendarSettings } from "./check-settings.mjs";
 import { checkSyncConnections } from "./check-connections.mjs";
+import koffi from "koffi";
 
+function detectShellDesktop() {
+  if (process.platform !== "win32") return false;
+  try {
+    const lib = koffi.load("user32.dll");
+    const proc = koffi.proto(
+      "int __stdcall FeiEnumWindow(uintptr_t hwnd, intptr_t param)",
+    );
+    const enumWindows = lib.func("EnumWindows", "int", [
+      koffi.pointer(proc),
+      "intptr_t",
+    ]);
+    const findChild = lib.func(
+      "uintptr_t __stdcall FindWindowExW(uintptr_t parent, uintptr_t after, str16 className, str16 title)",
+    );
+    let found = false;
+    enumWindows((hwnd) => {
+      if (findChild(hwnd, 0, "SHELLDLL_DefView", null)) {
+        found = true;
+        return 0;
+      }
+      return 1;
+    }, 0);
+    return found;
+  } catch {
+    return false;
+  }
+}
+
+const expectedEmbedded = detectShellDesktop() ? "embedded" : "floating";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { version } = JSON.parse(
   await readFile(path.join(root, "package.json"), "utf8"),
@@ -176,7 +206,7 @@ try {
   await page.getByLabel("开启桌面日历", { exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => window.calendar.desktopStatus()))
-    .toEqual({ mode: "embedded", visible: true });
+    .toEqual({ mode: expectedEmbedded, visible: true });
   const panel = browser
     .contexts()[0]
     .pages()

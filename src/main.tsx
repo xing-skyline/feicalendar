@@ -1,9 +1,10 @@
-import React from "react";
+import React, { Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App";
 import DesktopPanel from "./components/DesktopPanel";
 import QuickCapture from "./components/QuickCapture";
 import "./styles.css";
+
+const App = lazy(() => import("./App"));
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -27,12 +28,14 @@ class ErrorBoundary extends React.Component<
 }
 createRoot(document.getElementById("root")!).render(
   <ErrorBoundary>
-    {location.hash === "#desktop" ? (
-      <DesktopPanel />
-    ) : location.hash === "#capture" ? (
-      <QuickCapture />
-    ) : (
-      <App />
-    )}
+    <Suspense fallback={null}>
+      {location.hash === "#desktop" ? (
+        <DesktopPanel />
+      ) : location.hash === "#capture" ? (
+        <QuickCapture />
+      ) : (
+        <App />
+      )}
+    </Suspense>
   </ErrorBoundary>,
 );

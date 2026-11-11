@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   X,
   CalendarDays,
@@ -48,7 +48,30 @@ export default function EventEditor({
   context?: AppSnapshot;
 }) {
   const [event, setEvent] = useState(initial);
-  const conflicts = context ? eventConflicts(context, event) : [];
+  const conflicts = useMemo(
+    () =>
+      context
+        ? eventConflicts(context, {
+            ...initial,
+            id: event.id,
+            seriesId: event.seriesId,
+            start: event.start,
+            end: event.end,
+            allDay: event.allDay,
+            calendarId: event.calendarId,
+          })
+        : [],
+    [
+      context,
+      initial,
+      event.id,
+      event.seriesId,
+      event.start,
+      event.end,
+      event.allDay,
+      event.calendarId,
+    ],
+  );
   const [scope, setScope] = useState<"single" | "all" | "">("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);

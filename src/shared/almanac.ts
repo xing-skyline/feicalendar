@@ -35,20 +35,43 @@ export function almanac(day: string) {
   return value;
 }
 
+const holidayCache = new WeakMap<
+  HolidayData,
+  Map<string, { name: string; work: boolean; custom: false } | null>
+>();
+
 export function holiday(
   day: string,
   state: Pick<AppSnapshot, "holidayData" | "holidayOverrides">,
 ) {
   const custom = state.holidayOverrides?.[day];
   if (custom) return { ...custom, custom: true };
-  const year = (state.holidayData || bundledHolidays).years[day.slice(0, 4)];
-  if (!year) return undefined;
-  if (year.workdays.includes(day))
-    return { name: "调休上班", work: true, custom: false };
+  const data = state.holidayData || bundledHolidays;
+  let byDay = holidayCache.get(data);
+  if (!byDay) {
+    byDay = new Map();
+    holidayCache.set(data, byDay);
+  }
+  const cached = byDay.get(day);
+  if (cached !== undefined) return cached ?? undefined;
+  const year = data.years[day.slice(0, 4)];
+  if (!year) {
+    byDay.set(day, null);
+    return undefined;
+  }
+  if (year.workdays.includes(day)) {
+    const val = { name: "调休上班", work: true, custom: false as const };
+    byDay.set(day, val);
+    return val;
+  }
   const item = year.holidays.find(
     (item) => item.start <= day && item.end >= day,
   );
-  return item ? { name: item.name, work: false, custom: false } : undefined;
+  const val = item
+    ? { name: item.name, work: false, custom: false as const }
+    : null;
+  byDay.set(day, val);
+  return val ?? undefined;
 }
 
 export function isWorkday(
@@ -131,10 +154,12 @@ export function specialEvents(
   range: DateRange,
 ): CalendarEvent[] {
   const events: CalendarEvent[] = [];
+  const startDay = dateKey(range.start);
+  const endDay = dateKey(range.end);
   for (const item of state.specialDates || []) {
-    let day = nextSpecialDate(item, dateKey(range.start));
-    for (let count = 0; day && day < dateKey(range.end) && count < 4; count++) {
-      if (day >= dateKey(range.start))
+    let day = nextSpecialDate(item, startDay);
+    for (let count = 0; day && day < endDay && count < 4; count++) {
+      if (day >= startDay)
         events.push({
           id: `special:${item.id}:${day}`,
           calendarId: "special-dates",

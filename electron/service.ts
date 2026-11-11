@@ -983,11 +983,11 @@ export class CalendarService {
   async checkReminders(now = Date.now()) {
     const previous = JSON.stringify(this.store.state.reminderEntries);
     const notifications = scanReminders(this.store.state, now);
-    if (
-      JSON.stringify(this.store.state.reminderEntries) !== previous ||
-      now - this.reminderSavedAt >= 60_000
-    ) {
+    if (JSON.stringify(this.store.state.reminderEntries) !== previous) {
       await this.commit();
+      this.reminderSavedAt = now;
+    } else if (now - this.reminderSavedAt >= 300_000) {
+      await this.store.save();
       this.reminderSavedAt = now;
     }
     return notifications;

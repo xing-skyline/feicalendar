@@ -3,7 +3,37 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import koffi from "koffi";
 
+function detectShellDesktop() {
+  if (process.platform !== "win32") return false;
+  try {
+    const lib = koffi.load("user32.dll");
+    const proc = koffi.proto(
+      "int __stdcall FeiEnumWindow(uintptr_t hwnd, intptr_t param)",
+    );
+    const enumWindows = lib.func("EnumWindows", "int", [
+      koffi.pointer(proc),
+      "intptr_t",
+    ]);
+    const findChild = lib.func(
+      "uintptr_t __stdcall FindWindowExW(uintptr_t parent, uintptr_t after, str16 className, str16 title)",
+    );
+    let found = false;
+    enumWindows((hwnd) => {
+      if (findChild(hwnd, 0, "SHELLDLL_DefView", null)) {
+        found = true;
+        return 0;
+      }
+      return 1;
+    }, 0);
+    return found;
+  } catch {
+    return false;
+  }
+}
+
+const expectedEmbedded = detectShellDesktop() ? "embedded" : "floating";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const directory = await mkdtemp(path.join(os.tmpdir(), "feicalendar-widget-"));
 const env = {
@@ -29,7 +59,7 @@ try {
   await expect(page.getByLabel("开启桌面日历", { exact: true })).toBeChecked();
   await expect
     .poll(() => page.evaluate(() => window.calendar.desktopStatus()))
-    .toEqual({ mode: "embedded", visible: true });
+    .toEqual({ mode: expectedEmbedded, visible: true });
   let panel =
     application.windows().find((item) => item.url().endsWith("#desktop")) ||
     (await application.waitForEvent("window"));
@@ -41,7 +71,7 @@ try {
     await expect
       .poll(() => page.evaluate(() => window.calendar.desktopStatus()))
       .toEqual({
-        mode: mode === "embedded" ? "embedded" : "floating",
+        mode: mode === "embedded" ? expectedEmbedded : "floating",
         visible: true,
       });
     await expect
@@ -110,11 +140,11 @@ try {
   await trayItem("暂时隐藏桌面日历");
   await expect
     .poll(() => page.evaluate(() => window.calendar.desktopStatus()))
-    .toEqual({ mode: "embedded", visible: false });
+    .toEqual({ mode: expectedEmbedded, visible: false });
   await trayItem("显示桌面日历");
   await expect
     .poll(() => page.evaluate(() => window.calendar.desktopStatus()))
-    .toEqual({ mode: "embedded", visible: true });
+    .toEqual({ mode: expectedEmbedded, visible: true });
   await trayItem("关闭桌面日历");
   await expect(
     page.getByLabel("开启桌面日历", { exact: true }),
@@ -128,7 +158,7 @@ try {
   await expect(page.getByLabel("开启桌面日历", { exact: true })).toBeChecked();
   await expect
     .poll(() => page.evaluate(() => window.calendar.desktopStatus()))
-    .toEqual({ mode: "embedded", visible: true });
+    .toEqual({ mode: expectedEmbedded, visible: true });
   panel = application.windows().find((item) => item.url().endsWith("#desktop"));
   panel.on("pageerror", (error) => errors.push(error.message));
   await page.getByLabel("桌面深浅主题").selectOption("dark");
@@ -213,15 +243,15 @@ try {
     .toBe(false);
   await expect
     .poll(() => page.evaluate(() => window.calendar.desktopStatus()))
-    .toEqual({ mode: "embedded", visible: true });
+    .toEqual({ mode: expectedEmbedded, visible: true });
   await page.evaluate(() => window.calendar.desktop("hide"));
   await expect
     .poll(() => page.evaluate(() => window.calendar.desktopStatus()))
-    .toEqual({ mode: "embedded", visible: false });
+    .toEqual({ mode: expectedEmbedded, visible: false });
   await page.evaluate(() => window.calendar.desktop("show"));
   await expect
     .poll(() => page.evaluate(() => window.calendar.desktopStatus()))
-    .toEqual({ mode: "embedded", visible: true });
+    .toEqual({ mode: expectedEmbedded, visible: true });
   await mkdir(path.join(root, "test-results"), { recursive: true });
   await panel.screenshot({
     path: path.join(root, "test-results", "desktop-widget-dark.png"),
@@ -262,7 +292,7 @@ try {
   ).toBeVisible();
   await expect
     .poll(() => main.evaluate(() => window.calendar.desktopStatus()))
-    .toEqual({ mode: "embedded", visible: true });
+    .toEqual({ mode: expectedEmbedded, visible: true });
   await restarted.getByLabel("关闭桌面日历", { exact: true }).click();
   await expect
     .poll(() =>

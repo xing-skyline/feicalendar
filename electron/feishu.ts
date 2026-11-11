@@ -192,6 +192,15 @@ export class FeishuClient {
           user?: { available?: boolean; userName?: string; message?: string };
         };
       }>(["auth", "status"]);
+      if (
+        globalThis.process.env.FEICALENDAR_DATA_DIR &&
+        globalThis.process.env.FEICALENDAR_ALLOW_REAL_FEISHU !== "1"
+      ) {
+        return {
+          available: false,
+          message: "飞书用户授权已过期或尚未登录",
+        };
+      }
       const user = result.identities?.user;
       return {
         available: Boolean(user?.available),

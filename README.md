@@ -8,11 +8,11 @@
 
 [下载 Windows 便携版](https://github.com/xing-skyline/feicalendar/releases/latest) · [查看版本记录](https://github.com/xing-skyline/feicalendar/releases) · [反馈问题](https://github.com/xing-skyline/feicalendar/issues)
 
-0.5.2 增加快捷录入、提醒中心、桌面大月历、待办排期、课程表、农历纪念日、批量操作、导入打印及 Google / Microsoft 日历连接。后续开发安排与已知范围见开发进度文档。[开发进度](docs/DEVELOPMENT_STATUS.md) · [更新日志](CHANGELOG.md)
+0.5.3 完成苹果风格桌面界面改版与运行资源优化，并包含快捷录入、提醒中心、桌面大月历、待办排期、课程表、农历纪念日、批量操作、导入打印及 Google / Microsoft 日历连接。后续开发安排与已知范围见开发进度文档。[开发进度](docs/DEVELOPMENT_STATUS.md) · [更新日志](CHANGELOG.md)
 
 ## 快速开始
 
-1. 在 Releases 下载 `FeiCalendar-0.5.2-win-x64.exe`，放到准备长期使用的文件夹。
+1. 在 Releases 下载 `FeiCalendar-0.5.3-win-x64.exe`，放到准备长期使用的文件夹。
 2. 双击启动。首次运行需要等待程序解包，运行环境已随便携版提供。
 3. 点击“新建日程”或直接点击日历中的时间格，即可使用本地日历。
 4. 如需同步，打开“设置 → 日历连接”，添加所用服务，再到“通用设置”选择默认日历。
@@ -21,7 +21,7 @@
 当前发布 Windows x64 便携版。发布文件采用普通可执行文件分发，尚未配置代码签名证书。可通过同一 Release 中的 `SHA256SUMS.txt` 核对下载文件。
 
 ```powershell
-Get-FileHash .\FeiCalendar-0.5.2-win-x64.exe -Algorithm SHA256
+Get-FileHash .\FeiCalendar-0.5.3-win-x64.exe -Algorithm SHA256
 ```
 
 便携版可以移动、改名后启动。数据按当前 Windows 用户保存在 `%APPDATA%\FeiCalendar`。移动 EXE 后再次运行，会更新开始菜单中的飞历入口和任务栏重启路径。换一台电脑时，需在新设备上配置连接。
@@ -314,7 +314,7 @@ App Secret 经标准输入交给 lark-cli，组件管理本机凭据与授权续
 
 备份页可导出使用 AES-256-GCM 和密码派生密钥加密的 `.fcbackup` 文件，密码至少 8 个字符。导入后先预览新增、修改与删除，再确认恢复。默认仅恢复可写本地日历，可自行勾选已连接的可写云端日历和删除备份之外的日程。
 
-0.5.2 的恢复界面处理日历与日程差异。待办、模板、课程定义和完整设置包含在数据库备份中，目前通过退出应用后迁移整个数据库恢复。各设备的连接凭据仍需单独配置。加密备份密码由用户保管。
+0.5.3 的恢复界面处理日历与日程差异。待办、模板、课程定义和完整设置包含在数据库备份中，目前通过退出应用后迁移整个数据库恢复。各设备的连接凭据仍需单独配置。加密备份密码由用户保管。
 
 ### 网络传输
 

@@ -1,4 +1,7 @@
 import {
+  lazy,
+  Suspense,
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -24,26 +27,54 @@ import {
   teachingWeek,
   TIME_ZONE,
 } from "../shared/dates";
-import { expandCalendarEvents } from "../shared/occurrences";
+import { expandCalendarEvents, reconcileSnapshot } from "../shared/occurrences";
 import DayLabel from "./DayLabel";
 import { nextSpecialDate, daysUntil } from "../shared/almanac";
-import EventEditor from "./EventEditor";
 import { eventDraft } from "../shared/capture";
 import { meetingLink } from "../shared/meetings";
 
-function eventsOn(events: CalendarEvent[], day: string) {
-  return events.filter((event) =>
-    event.allDay
-      ? event.start <= day && event.end > day
-      : new Date(event.start).getTime() <
-          new Date(`${shiftDate(day, 1)}T00:00:00+08:00`).getTime() &&
-        new Date(event.end).getTime() >
-          new Date(`${day}T00:00:00+08:00`).getTime(),
-  );
+const EventEditor = lazy(() => import("./EventEditor"));
+
+const dayHeadingFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "long",
+  day: "numeric",
+  weekday: "short",
+  timeZone: TIME_ZONE,
+});
+
+function indexEventsByDays(events: CalendarEvent[], days: string[]) {
+  const map = new Map<string, CalendarEvent[]>();
+  if (!days.length) return map;
+  const parsed = events.map((event) => ({
+    event,
+    startMs: event.allDay ? 0 : Date.parse(event.start),
+    endMs: event.allDay ? 0 : Date.parse(event.end),
+  }));
+  for (const day of days) {
+    const dayStartMs = Date.parse(`${day}T00:00:00+08:00`);
+    const dayEndMs = dayStartMs + 86400_000;
+    const list: CalendarEvent[] = [];
+    for (const item of parsed) {
+      if (
+        item.event.allDay
+          ? item.event.start <= day && item.event.end > day
+          : item.startMs < dayEndMs && item.endMs > dayStartMs
+      ) {
+        list.push(item.event);
+      }
+    }
+    map.set(day, list);
+  }
+  return map;
 }
 
 export default function DesktopPanel() {
-  const [snapshot, setSnapshot] = useState<AppSnapshot>();
+  const [snapshot, setSnapshotState] = useState<AppSnapshot>();
+  const setSnapshot = useCallback(
+    (next: AppSnapshot) =>
+      setSnapshotState((prev) => reconcileSnapshot(prev, next)),
+    [],
+  );
   const [today, setToday] = useState(dateKey(new Date()));
   const [selected, setSelected] = useState(today);
   const [month, setMonth] = useState(`${today.slice(0, 7)}-01`);
@@ -64,6 +95,7 @@ export default function DesktopPanel() {
     const update = () => setSystemDark(media.matches);
     media.addEventListener("change", update);
     const timer = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
       setClock(Date.now());
       const next = dateKey(new Date());
       setToday((previous) => {
@@ -83,7 +115,7 @@ export default function DesktopPanel() {
       clearInterval(timer);
       media.removeEventListener("change", update);
     };
-  }, []);
+  }, [setSnapshot]);
   const settings = snapshot?.settings;
   const dark =
     settings?.desktopTheme === "dark" ||
@@ -128,78 +160,88 @@ export default function DesktopPanel() {
     settings?.feishuEnabled,
     enabledConnections,
   ]);
-  const dates = Array.from({ length: 42 }, (_, index) =>
-    shiftDate(start, index),
+  const dates = useMemo(
+    () => Array.from({ length: 42 }, (_, index) => shiftDate(start, index)),
+    [start],
+  );
+  const calendarMap = useMemo(
+    () => new Map(snapshot?.calendars.map((item) => [item.id, item]) || []),
+    [snapshot?.calendars],
+  );
+  const visibleIds = useMemo(
+    () =>
+      new Set(
+        snapshot?.settings.desktopCalendarIds ??
+          snapshot?.calendars
+            .filter((item) => item.visible)
+            .map((item) => item.id) ??
+          [],
+      ),
+    [snapshot?.settings.desktopCalendarIds, snapshot?.calendars],
   );
   const events = useMemo(() => {
     if (!snapshot) return [];
-    const visible = new Set(
-      snapshot.settings.desktopCalendarIds ??
-        snapshot.calendars
-          .filter((item) => item.visible)
-          .map((item) => item.id),
-    );
     const end = shiftDate(start, 43);
     return expandCalendarEvents(snapshot, { start: shiftDate(start, -1), end })
-      .filter((item) => visible.has(item.calendarId))
+      .filter((item) => visibleIds.has(item.calendarId))
       .sort(
         (left, right) =>
           Number(right.allDay) - Number(left.allDay) ||
           left.start.localeCompare(right.start),
       );
-  }, [snapshot, start]);
-  const selectedEvents = eventsOn(events, selected);
-  const listDays = Array.from({ length: 14 }, (_, index) =>
-    shiftDate(selected, index),
+  }, [snapshot?.events, snapshot?.specialDates, visibleIds, start]);
+  const eventsByDay = useMemo(
+    () => indexEventsByDays(events, dates),
+    [events, dates],
+  );
+  const selectedEvents = eventsByDay.get(selected) || [];
+  const listDays = useMemo(
+    () => Array.from({ length: 14 }, (_, index) => shiftDate(selected, index)),
+    [selected],
   );
   const agendaEvents = useMemo(() => {
     if (!snapshot) return [];
-    const visible = new Set(
-      snapshot.settings.desktopCalendarIds ??
-        snapshot.calendars
-          .filter((item) => item.visible)
-          .map((item) => item.id),
-    );
     return expandCalendarEvents(snapshot, {
       start: shiftDate(selected, -1),
       end: shiftDate(selected, 15),
     })
-      .filter((item) => visible.has(item.calendarId))
+      .filter((item) => visibleIds.has(item.calendarId))
       .sort(
         (left, right) =>
           Number(right.allDay) - Number(left.allDay) ||
           left.start.localeCompare(right.start),
       );
-  }, [snapshot, selected]);
+  }, [snapshot?.events, snapshot?.specialDates, visibleIds, selected]);
+  const agendaEventsByDay = useMemo(
+    () => indexEventsByDays(agendaEvents, listDays),
+    [agendaEvents, listDays],
+  );
   const act = (promise: Promise<unknown>) => {
     void promise.catch((err: Error) => setError(err.message));
   };
   const add = (day: string) => {
     if (snapshot) setEditor(eventDraft(snapshot, `${day}T09:00:00+08:00`));
   };
-  const upcoming = agendaEvents
-    .filter(
-      (event) =>
-        !event.allDay &&
-        !event.completed &&
-        new Date(event.start).getTime() > clock,
-    )
-    .sort((left, right) => left.start.localeCompare(right.start))[0];
+  const upcoming = useMemo(
+    () =>
+      agendaEvents
+        .filter(
+          (event) =>
+            !event.allDay &&
+            !event.completed &&
+            Date.parse(event.start) > clock,
+        )
+        .sort((left, right) => left.start.localeCompare(right.start))[0],
+    [agendaEvents, clock],
+  );
   const dropOn = (id: string, day: string) => {
     const event = events.find((item) => item.id === id);
-    if (
-      !event ||
-      !snapshot?.calendars.find((calendar) => calendar.id === event.calendarId)
-        ?.writable
-    )
-      return;
+    if (!event || !calendarMap.get(event.calendarId)?.writable) return;
     const start = event.allDay
       ? day
       : `${day}T${inputTime(event.start).slice(11)}:00+08:00`;
     const end = new Date(
-      new Date(start).getTime() +
-        new Date(event.end).getTime() -
-        new Date(event.start).getTime(),
+      Date.parse(start) + Date.parse(event.end) - Date.parse(event.start),
     );
     const changed = {
       ...event,
@@ -236,17 +278,9 @@ export default function DesktopPanel() {
           settings.weekStartsOn,
         )
       : null;
-  const dayHeading = (day: string) =>
-    new Intl.DateTimeFormat("zh-CN", {
-      month: "long",
-      day: "numeric",
-      weekday: "short",
-      timeZone: TIME_ZONE,
-    }).format(new Date(day));
+  const dayHeading = (day: string) => dayHeadingFormatter.format(new Date(day));
   const renderEvent = (event: CalendarEvent) => {
-    const calendar = snapshot?.calendars.find(
-      (item) => item.id === event.calendarId,
-    );
+    const calendar = calendarMap.get(event.calendarId);
     return (
       <div className="desktop-event-row" key={event.id}>
         <input
@@ -419,7 +453,7 @@ export default function DesktopPanel() {
           </div>
           <div className="desktop-grid-days">
             {dates.map((day) => {
-              const items = eventsOn(events, day);
+              const items = eventsByDay.get(day) || [];
               return (
                 <div
                   className={`desktop-grid-day ${day === today ? "today" : ""} ${day.slice(0, 7) !== month.slice(0, 7) ? "outside" : ""}`}
@@ -508,18 +542,14 @@ export default function DesktopPanel() {
                   <span>{Number(day.slice(-2))}</span>
                   {snapshot && <DayLabel day={day} snapshot={snapshot} />}
                   <div className="desktop-dots">
-                    {eventsOn(events, day)
-                      .slice(0, 3)
-                      .map((event) => (
-                        <i
-                          key={event.id}
-                          style={{
-                            background: snapshot?.calendars.find(
-                              (item) => item.id === event.calendarId,
-                            )?.color,
-                          }}
-                        />
-                      ))}
+                    {(eventsByDay.get(day) || []).slice(0, 3).map((event) => (
+                      <i
+                        key={event.id}
+                        style={{
+                          background: calendarMap.get(event.calendarId)?.color,
+                        }}
+                      />
+                    ))}
                   </div>
                 </button>
               ))}
@@ -544,7 +574,7 @@ export default function DesktopPanel() {
       <section className="desktop-agenda" aria-label="桌面日程">
         {settings?.desktopView === "agenda"
           ? listDays.map((day) => {
-              const dayEvents = eventsOn(agendaEvents, day);
+              const dayEvents = agendaEventsByDay.get(day) || [];
               if (!dayEvents.length) return null;
               return (
                 <div key={day}>
@@ -558,7 +588,7 @@ export default function DesktopPanel() {
             })
           : selectedEvents.map(renderEvent)}
         {(settings?.desktopView === "agenda"
-          ? !listDays.some((day) => eventsOn(agendaEvents, day).length)
+          ? !listDays.some((day) => (agendaEventsByDay.get(day) || []).length)
           : !selectedEvents.length) && (
           <div className="desktop-empty">
             <CalendarDays size={26} />
@@ -626,39 +656,41 @@ export default function DesktopPanel() {
         </div>
       )}
       {editor && snapshot && (
-        <EventEditor
-          context={snapshot}
-          key={editor.id || "new"}
-          initial={editor}
-          calendars={snapshot.calendars}
-          templates={snapshot.templates}
-          localReminderMinutes={
-            snapshot.reminderRules?.[editor.id] ??
-            snapshot.reminderRules?.[editor.seriesId || ""]
-          }
-          defaultDurationMinutes={settings?.defaultDurationMinutes || 60}
-          onSave={async (input) => {
-            setSnapshot(await window.calendar.saveEvent(input));
-          }}
-          onDelete={async (id, scope) => {
-            setSnapshot(await window.calendar.deleteEvent(id, scope));
-          }}
-          onClose={() => setEditor(undefined)}
-          onDuplicate={(event) => {
-            const draft = eventDraft(
-              snapshot,
-              event.start,
-              event.end,
-              event.allDay,
-            );
-            setEditor({
-              ...draft,
-              title: event.title,
-              description: event.description,
-              location: event.location,
-            });
-          }}
-        />
+        <Suspense fallback={null}>
+          <EventEditor
+            context={snapshot}
+            key={editor.id || "new"}
+            initial={editor}
+            calendars={snapshot.calendars}
+            templates={snapshot.templates}
+            localReminderMinutes={
+              snapshot.reminderRules?.[editor.id] ??
+              snapshot.reminderRules?.[editor.seriesId || ""]
+            }
+            defaultDurationMinutes={settings?.defaultDurationMinutes || 60}
+            onSave={async (input) => {
+              setSnapshot(await window.calendar.saveEvent(input));
+            }}
+            onDelete={async (id, scope) => {
+              setSnapshot(await window.calendar.deleteEvent(id, scope));
+            }}
+            onClose={() => setEditor(undefined)}
+            onDuplicate={(event) => {
+              const draft = eventDraft(
+                snapshot,
+                event.start,
+                event.end,
+                event.allDay,
+              );
+              setEditor({
+                ...draft,
+                title: event.title,
+                description: event.description,
+                location: event.location,
+              });
+            }}
+          />
+        </Suspense>
       )}
     </main>
   );

@@ -25,7 +25,14 @@ export default function DesktopSettings({
   useEffect(() => setColor(settings.desktopColor), [settings.desktopColor]);
   useEffect(() => {
     const refresh = () => {
-      void window.calendar.desktopStatus().then(setStatus);
+      if (document.visibilityState === "hidden") return;
+      void window.calendar.desktopStatus().then((next) =>
+        setStatus((prev) =>
+          prev?.mode === next.mode && prev?.visible === next.visible
+            ? prev
+            : next,
+        ),
+      );
     };
     refresh();
     const timer = setInterval(refresh, 1500);

@@ -72,7 +72,17 @@ async function main() {
   const oauth = new OAuthAuthorization();
   app.once("will-quit", () => oauth.cancel());
   let capture: BrowserWindow | null = null;
+  let captureCleanupTimer: ReturnType<typeof setTimeout> | undefined;
+  const closeCapture = () => {
+    capture?.hide();
+    clearTimeout(captureCleanupTimer);
+    captureCleanupTimer = setTimeout(() => {
+      if (capture && !capture.isDestroyed() && !capture.isVisible())
+        capture.destroy();
+    }, 250);
+  };
   const showCapture = async () => {
+    clearTimeout(captureCleanupTimer);
     if (!capture || capture.isDestroyed()) {
       capture = new BrowserWindow({
         width: 660,
@@ -83,12 +93,13 @@ async function main() {
         frame: false,
         alwaysOnTop: true,
         skipTaskbar: true,
-        backgroundColor: "#f8f9fd",
+        backgroundColor: "#f5f5f7",
         webPreferences: {
           preload: path.join(__dirname, "preload.cjs"),
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,
+          spellcheck: false,
         },
       });
       capture.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -98,7 +109,7 @@ async function main() {
       capture.on("close", (event) => {
         if (!quitting) {
           event.preventDefault();
-          capture?.hide();
+          closeCapture();
         }
       });
       capture.on("closed", () => {
@@ -131,6 +142,7 @@ async function main() {
     registeredShortcut = shortcut;
   };
   app.once("will-quit", () => {
+    clearTimeout(captureCleanupTimer);
     globalShortcut.unregisterAll();
     capture?.destroy();
   });
@@ -614,7 +626,7 @@ async function main() {
     "quick-capture": async (input) => {
       if (z.enum(["open", "close"]).parse(input) === "open")
         await showCapture();
-      else capture?.hide();
+      else closeCapture();
     },
     "save-template": (input) =>
       service.exclusive(() =>

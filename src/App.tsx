@@ -48,6 +48,7 @@ import type {
   EventSave,
 } from "./shared/types";
 import {
+  clearDateCaches,
   dateKey,
   shiftDate,
   overlaps,
@@ -55,7 +56,8 @@ import {
   hourTime,
   teachingWeek,
 } from "./shared/dates";
-import { expandCalendarEvents } from "./shared/occurrences";
+import { clearRecurrenceCache } from "./shared/recurrence";
+import { expandCalendarEvents, reconcileSnapshot } from "./shared/occurrences";
 import DayLabel from "./components/DayLabel";
 import TaskSidebar from "./components/TaskSidebar";
 import CalendarSets from "./components/CalendarSets";
@@ -116,7 +118,12 @@ const providerLabel = {
 };
 
 export default function App() {
-  const [snapshot, setSnapshot] = useState<AppSnapshot>();
+  const [snapshot, setSnapshotState] = useState<AppSnapshot>();
+  const setSnapshot = useCallback(
+    (next: AppSnapshot) =>
+      setSnapshotState((prev) => reconcileSnapshot(prev, next)),
+    [],
+  );
   const [loadingError, setLoadingError] = useState("");
   const [view, setView] = useState<CalendarView>("timeGridWeek");
   const [title, setTitle] = useState("");
@@ -283,6 +290,10 @@ export default function App() {
       ),
     [snapshot?.calendars],
   );
+  const calendarMap = useMemo(
+    () => new Map(snapshot?.calendars.map((item) => [item.id, item]) || []),
+    [snapshot?.calendars],
+  );
   const calculateTeachingWeek = useCallback(
     (date: Date) =>
       teachingWeek(
@@ -297,10 +308,43 @@ export default function App() {
       snapshot?.settings.weekStartsOn,
     ],
   );
-  const occurrences = useMemo(
-    () => (snapshot ? expandCalendarEvents(snapshot, range) : []),
-    [snapshot?.events, snapshot?.specialDates, range],
-  );
+  const occurrenceCacheRef = useRef<{
+    events?: CalendarEvent[];
+    specialDates?: AppSnapshot["specialDates"];
+    ranges: Map<string, CalendarEvent[]>;
+  }>({ ranges: new Map() });
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        occurrenceCacheRef.current.ranges.clear();
+        clearRecurrenceCache();
+        clearDateCaches();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+  const occurrences = useMemo(() => {
+    if (!snapshot) return [];
+    const cache = occurrenceCacheRef.current;
+    if (
+      cache.events !== snapshot.events ||
+      cache.specialDates !== snapshot.specialDates
+    ) {
+      cache.events = snapshot.events;
+      cache.specialDates = snapshot.specialDates;
+      cache.ranges.clear();
+    }
+    const key = `${range.start}|${range.end}`;
+    const hit = cache.ranges.get(key);
+    if (hit) return hit;
+    const expanded = expandCalendarEvents(snapshot, range);
+    if (Date.parse(range.end) - Date.parse(range.start) <= 65 * 86400_000) {
+      if (cache.ranges.size >= 3) cache.ranges.clear();
+      cache.ranges.set(key, expanded);
+    }
+    return expanded;
+  }, [snapshot?.events, snapshot?.specialDates, range]);
   const visibleEvents = useMemo(
     () => occurrences.filter((item) => visibleIds.has(item.calendarId)),
     [occurrences, visibleIds],
@@ -308,9 +352,7 @@ export default function App() {
   const fcEvents = useMemo(
     () =>
       visibleEvents.map((event) => {
-        const calendar = snapshot!.calendars.find(
-          (item) => item.id === event.calendarId,
-        )!;
+        const calendar = calendarMap.get(event.calendarId)!;
         return {
           ...event,
           backgroundColor: `${calendar.color}20`,
@@ -325,22 +367,97 @@ export default function App() {
           extendedProps: { model: event },
         };
       }),
-    [visibleEvents, snapshot?.calendars],
+    [visibleEvents, calendarMap],
   );
   const selectedDay = dateKey(selectedDate);
-  const dayEvents = visibleEvents
-    .filter((event) =>
-      event.allDay
-        ? event.start <= selectedDay && event.end > selectedDay
-        : overlaps(event.start, event.end, {
-            start: `${selectedDay}T00:00:00+08:00`,
-            end: `${shiftDate(selectedDay, 1)}T00:00:00+08:00`,
-          }),
-    )
-    .sort(
-      (a, b) =>
-        Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start),
-    );
+  const dayEvents = useMemo(
+    () =>
+      visibleEvents
+        .filter((event) =>
+          event.allDay
+            ? event.start <= selectedDay && event.end > selectedDay
+            : overlaps(event.start, event.end, {
+                start: `${selectedDay}T00:00:00+08:00`,
+                end: `${shiftDate(selectedDay, 1)}T00:00:00+08:00`,
+              }),
+        )
+        .sort(
+          (a, b) =>
+            Number(b.allDay) - Number(a.allDay) ||
+            a.start.localeCompare(b.start),
+        ),
+    [visibleEvents, selectedDay],
+  );
+  const almanacState = useMemo(
+    () =>
+      snapshot
+        ? ({
+            settings: {
+              showHolidays: snapshot.settings.showHolidays,
+              showSolarTerms: snapshot.settings.showSolarTerms,
+              showLunar: snapshot.settings.showLunar,
+            },
+            holidayData: snapshot.holidayData,
+            holidayOverrides: snapshot.holidayOverrides,
+          } as AppSnapshot)
+        : undefined,
+    [
+      snapshot?.settings.showHolidays,
+      snapshot?.settings.showSolarTerms,
+      snapshot?.settings.showLunar,
+      snapshot?.holidayData,
+      snapshot?.holidayOverrides,
+    ],
+  );
+  const calendarViews = useMemo(
+    () => ({
+      ...customViews,
+      dayGridMonth: {
+        dayCellContent: (info: DayCellContentArg) => (
+          <>
+            <span className="fc-day-num">{dayNumberContent(info)}</span>
+            {almanacState && (
+              <DayLabel day={dateKey(info.date)} snapshot={almanacState} />
+            )}
+          </>
+        ),
+      },
+      multiMonthYear: {
+        dayMaxEvents: 1,
+        dayCellContent: (info: DayCellContentArg) => (
+          <>
+            <span className="fc-day-num">{dayNumberContent(info)}</span>
+            {almanacState && (
+              <DayLabel day={dateKey(info.date)} snapshot={almanacState} />
+            )}
+          </>
+        ),
+      },
+    }),
+    [almanacState],
+  );
+  const renderDayHeader = useCallback(
+    (info: { date: Date; view: { type: string } }) => (
+      <div className="calendar-day-heading">
+        <span>{weekdayFormat.format(info.date)}</span>
+        {info.view.type.startsWith("timeGrid") && (
+          <b>{Number(dateKey(info.date).slice(-2))}</b>
+        )}
+        {info.view.type.startsWith("timeGrid") && almanacState && (
+          <DayLabel day={dateKey(info.date)} snapshot={almanacState} />
+        )}
+      </div>
+    ),
+    [almanacState],
+  );
+  const timeFormat = useMemo(
+    () => ({
+      hour: "2-digit" as const,
+      minute: "2-digit" as const,
+      hour12: Boolean(snapshot?.settings.hour12),
+    }),
+    [snapshot?.settings.hour12],
+  );
   const searchResults = useMemo(() => {
     if (!query.trim()) return [];
     const needle = query.toLowerCase().trim();
@@ -796,31 +913,7 @@ export default function App() {
                 locale={zhLocale}
                 timeZone={TIME_ZONE}
                 initialView={snapshot.settings.calendarView}
-                views={{
-                  ...customViews,
-                  dayGridMonth: {
-                    dayCellContent: (info: DayCellContentArg) => (
-                      <>
-                        <span>{dayNumberContent(info)}</span>
-                        <DayLabel
-                          day={dateKey(info.date)}
-                          snapshot={snapshot}
-                        />
-                      </>
-                    ),
-                  },
-                  multiMonthYear: {
-                    dayCellContent: (info: DayCellContentArg) => (
-                      <>
-                        <span>{dayNumberContent(info)}</span>
-                        <DayLabel
-                          day={dateKey(info.date)}
-                          snapshot={snapshot}
-                        />
-                      </>
-                    ),
-                  },
-                }}
+                views={calendarViews}
                 headerToolbar={false}
                 height="100%"
                 firstDay={snapshot.settings.weekStartsOn}
@@ -844,27 +937,9 @@ export default function App() {
                 )}
                 slotDuration="00:30:00"
                 snapDuration="00:15:00"
-                slotLabelFormat={{
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  hour12: snapshot.settings.hour12,
-                }}
-                eventTimeFormat={{
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  hour12: snapshot.settings.hour12,
-                }}
-                dayHeaderContent={(info) => (
-                  <div className="calendar-day-heading">
-                    <span>{weekdayFormat.format(info.date)}</span>
-                    {info.view.type.startsWith("timeGrid") && (
-                      <b>{Number(dateKey(info.date).slice(-2))}</b>
-                    )}
-                    {info.view.type.startsWith("timeGrid") && (
-                      <DayLabel day={dateKey(info.date)} snapshot={snapshot} />
-                    )}
-                  </div>
-                )}
+                slotLabelFormat={timeFormat}
+                eventTimeFormat={timeFormat}
+                dayHeaderContent={renderDayHeader}
                 navLinks
                 navLinkDayClick={(date) => {
                   navigate(date);
