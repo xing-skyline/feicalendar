@@ -2,6 +2,10 @@
 
 更新于 2026-11-11，当前迭代在 Windows 0.5.2 收口。后续功能采用小版本分批实现，手机端暂缓。
 
+## 发布状态
+
+0.5.2 已于 2026-11-11 在 GitHub 公开发布，发布源码提交为 `c1639d6`。GitHub Windows 构建中的依赖安装、类型检查、51 项测试、便携版打包和图标校验全部通过。正式版包含 EXE 和 SHA-256 校验文件，校验文件与 GitHub 资产摘要一致。[0.5.2 发行版](https://github.com/xing-skyline/feicalendar/releases/tag/v0.5.2) · [发布构建记录](https://github.com/xing-skyline/feicalendar/actions/runs/42975950507)
+
 ## 0.5.2 已实现范围
 
 | 模块 | 实现与主要入口 |
