@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import { mkdir, open, rename, rm, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import type { UpdateStatus } from "../src/shared/types";
 
 export const RELEASE_API =
@@ -130,6 +131,7 @@ function Get-UpdateHash([string]$file) {
   finally { $stream.Dispose(); $hash.Dispose() }
 }
 $m = Get-Content -LiteralPath '${literal}' -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($m.ready) { [IO.File]::WriteAllText($m.ready, 'ready') }
 $staged = $m.target + '.update-new'
 $backup = $m.target + '.previous'
 $moved = $false
@@ -394,6 +396,8 @@ export class PortableUpdater {
     await handle.close();
     await rm(probe);
     const manifest = path.join(this.directory, "install.json");
+    const ready = path.join(this.directory, "installer.ready");
+    await rm(ready, { force: true });
     await writeFile(
       manifest,
       JSON.stringify({
@@ -403,44 +407,67 @@ export class PortableUpdater {
         target,
         sha256: this.downloaded.hash,
         version: this.release.version,
+        ready,
         result: path.join(this.directory, "result.json"),
       }),
     );
-    return () =>
-      new Promise<void>((resolve, reject) => {
-        const executable = path.join(
-          process.env.SystemRoot || "C:\\Windows",
-          "System32",
-          "WindowsPowerShell",
-          "v1.0",
-          "powershell.exe",
-        );
-        const child = spawn(
-          executable,
-          [
-            "-NoProfile",
-            "-NonInteractive",
-            "-EncodedCommand",
-            Buffer.from(installScript(manifest), "utf16le").toString("base64"),
-          ],
-          {
-            detached: true,
-            stdio: "ignore",
-            windowsHide: true,
-            cwd: this.directory,
-            env: Object.fromEntries(
-              Object.entries(process.env).filter(
-                ([key]) => !key.startsWith("PORTABLE_EXECUTABLE_"),
-              ),
+    return async () => {
+      const log = await open(path.join(this.directory, "launcher.log"), "w");
+      const executable = path.join(
+        process.env.SystemRoot || "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      const child = spawn(
+        executable,
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `Start-Process -FilePath '${executable.replace(/'/g, "''")}' -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand','${Buffer.from(installScript(manifest), "utf16le").toString("base64")}') -WorkingDirectory '${this.directory.replace(/'/g, "''")}' -RedirectStandardError '${path.join(this.directory, "installer.log").replace(/'/g, "''")}' -WindowStyle Hidden`,
+        ],
+        {
+          // Start-Process creates an independent hidden helper. PowerShell exits
+          // before executing commands under Node's Windows DETACHED_PROCESS flag.
+          detached: false,
+          stdio: ["ignore", log.fd, log.fd],
+          windowsHide: true,
+          cwd: this.directory,
+          env: Object.fromEntries(
+            Object.entries(process.env).filter(
+              ([key]) => !key.startsWith("PORTABLE_EXECUTABLE_"),
             ),
-          },
-        );
-        child.once("error", reject);
-        child.once("spawn", () => {
-          child.unref();
-          this.set({ phase: "installing" });
-          resolve();
-        });
+          ),
+        },
+      );
+      let launchError: Error | undefined;
+      child.once("error", (error) => {
+        launchError = error;
       });
+      try {
+        for (let attempt = 0; attempt < 150; attempt++) {
+          if (launchError || (child.exitCode !== null && child.exitCode !== 0))
+            throw new Error(
+              `升级助手启动失败（${launchError?.message || child.exitCode}），应用尚未退出。请查看更新目录中的 installer.log`,
+            );
+          try {
+            if ((await readFile(ready, "utf8")) === "ready") {
+              child.unref();
+              this.set({ phase: "installing" });
+              return;
+            }
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+          await delay(100);
+        }
+        child.kill();
+        throw new Error("升级助手未能启动，应用尚未退出。可从发布页下载新版");
+      } finally {
+        await log.close();
+      }
+    };
   }
 }

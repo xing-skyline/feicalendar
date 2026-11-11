@@ -1,7 +1,7 @@
 {
   "name": "feicalendar",
   "productName": "FeiCalendar",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "飞历 — 支持多来源同步与教学周的桌面日历",
   "author": "xing-skyline",
   "private": true,

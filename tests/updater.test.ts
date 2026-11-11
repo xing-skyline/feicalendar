@@ -13,6 +13,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import os from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   compareVersions,
   parseRelease,
@@ -247,5 +248,53 @@ test(
     await writeFile(source, "fixture invalid executable");
     assert.equal((await run()).ok, false);
     assert.equal(await fileHash(target), installedHash);
+  },
+);
+
+test(
+  "the production helper starts hidden and survives its parent exiting",
+  { skip: process.platform !== "win32" },
+  async (t) => {
+    const directory = await temporary(t);
+    const system = path.join(
+      process.env.SystemRoot || "C:\\Windows",
+      "System32",
+    );
+    const target = path.join(directory, "飞历 升级.exe");
+    const source = path.join(system, "whoami.exe");
+    await copyFile(path.join(system, "where.exe"), target);
+    await promisify(execFile)(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "scripts/fixtures/update-launcher.ts",
+        directory,
+        target,
+        source,
+      ],
+      { windowsHide: true, timeout: 20_000 },
+    );
+    const expected = await fileHash(source);
+    let result: { ok: boolean } | undefined;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try {
+        result = JSON.parse(
+          (
+            await readFile(path.join(directory, "updates/result.json"), "utf8")
+          ).replace(/^\uFEFF/, ""),
+        );
+      } catch {
+        /* The helper is still writing its completion result. */
+      }
+      if (result) break;
+      await delay(100);
+    }
+    assert.equal(await fileHash(target), expected);
+    assert.equal(
+      await readFile(path.join(directory, "updates/installer.ready"), "utf8"),
+      "ready",
+    );
+    assert.equal(result?.ok, true);
   },
 );
